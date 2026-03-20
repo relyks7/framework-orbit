@@ -1,6 +1,25 @@
 #include <bits/stdc++.h>
 using namespace std;
-int n; int d; int r; int deg; float eta; float alpha; float beta; float lambda; float dt; float omega; float gamma; float rho; float zeta; float theta; float kappa; float xi;
+mt19937 rng(random_device{}());
+float gaussian_noise(float mean, float stddev){
+    normal_distribution<float> dist(mean, stddev);
+    return dist(rng);
+}
+//in hindsight using greek letters wasn't the best idea
+int n; //number of nodes
+int d; //internal dimension
+int r; //low-rank dimension
+int deg; //maximum node degree
+float dt; //delta time
+float eta; //oja's learning rate
+float alpha; //contribution of error/fast-timescale internal state adaptation rate
+float lambda; //decay rate of h
+float omega; //energy threshold for reaping/apoptosis
+float gamma; //decay rate for oja's
+float rho; //decay rate for voltage
+float zeta; //decay rate for energy
+float theta; //voltage threshold for firing, triggering oja's, and spiking stress
+float kappa; //decay rate for stress
 struct node{
     vector<float> h; //internal state
     vector<float> err; //error
@@ -8,7 +27,7 @@ struct node{
     vector<float> z; //storage variable for oja/accumulated projected postsynaptic activity
     float e; //energy - leaky integrator
     float v; //voltage - liquid reservoir
-    float stress; //aggregate of surprisal
+    float stress; //aggregate/leaky integrator of surprisal
     bool alive;
     vector<vector<float>> a;
     vector<vector<float>> b;
@@ -20,7 +39,7 @@ struct edge{
 };
 vector<node> nodes;
 vector<vector<edge>> adj;
-vector<float> matvec(vector<vector<float>> a, vector<float> b){
+vector<float> matvec(const vector<vector<float>>& a, const vector<float>& b){
     int n=a.size();
     int m=a[0].size();
     vector<float> c(n,0);
@@ -31,7 +50,7 @@ vector<float> matvec(vector<vector<float>> a, vector<float> b){
     }
     return c;
 }
-vector<vector<float>> outer_prod(vector<float> a, vector<float> b){
+vector<vector<float>> outer_prod(const vector<float>& a, const vector<float>& b){
     int n=a.size();
     int m=b.size();
     vector<vector<float>> c(n, vector<float>(m, 0));
@@ -42,7 +61,7 @@ vector<vector<float>> outer_prod(vector<float> a, vector<float> b){
     }
     return c;
 }
-void oja(vector<vector<float>> &a, vector<float> x, vector<float> z){
+void oja(vector<vector<float>> &a, const vector<float>& x, const vector<float>& z){
     vector<vector<float>> t1=outer_prod(x, z);
     vector<vector<float>> t2=outer_prod(matvec(a, z), z);
     for (int i=0;i<a.size();i++){
@@ -100,7 +119,9 @@ void update(){
         }
         nodes[i].v+=dt*(surprise-rho*nodes[i].v);
         nodes[i].e+=dt*(h_mag-zeta*nodes[i].e);
+        nodes[i].stress-=dt*kappa*nodes[i].stress;
         if (nodes[i].v>theta){
+            nodes[i].stress+=1.0f;
             nodes[i].out=matvec(nodes[i].b_t,nodes[i].err);
             nodes[i].v=0.0f;
             oja(nodes[i].a, new_h[i], nodes[i].z); //use new_h or current h?
@@ -110,7 +131,6 @@ void update(){
         if (nodes[i].e<omega){
             nodes[i].alive=false;
         }
-        nodes[i].stress+=1.0f-dt*kappa*nodes[i].stress;
     }
     for (int i=0;i<n;i++){
         if (!nodes[i].alive) continue;
@@ -121,30 +141,44 @@ void mitosis(int p){ //no, kris did not mitose
     nodes[p].stress=0.0f;
     nodes[p].e/=2.0f;
     node child=nodes[p];
-    adj.push_back({});
     for (int i=0;i<d;i++){
         for (int j=0;j<r;j++){
-            child.a[i][j]+=gaussian_noise(0.0f, 0.01f); //TODO: make gaussian noise function
+            child.a[i][j]+=gaussian_noise(0.0f, 0.01f);
             float bgauss=gaussian_noise(0.0f, 0.01f);
             child.b[i][j]+=bgauss;
             child.b_t[j][i]+=bgauss;
         }
     }
+    nodes.push_back(child);
+    adj.push_back({});
     for (auto& x:adj[p]){
-        x.w=x.w/2; //consider making mitoses imperfect
+        x.w=x.w/2; //consider making mitoses imperfectto introduce a bit more asymmetry
         adj[n].push_back({x.from, x.w});
     }
     for (int i=0;i<n;i++){
-        for (auto& x:adj[i]){
-            if (x.from==p){
-                x.w/=2;
-                adj[i].push_back({n, x.w});
+        int sz=adj[i].size();
+        for (int j=0;j<sz;j++){
+            if (adj[i][j].from==p){
+                adj[i][j].w/=2;
+                adj[i].push_back({n, adj[i][j].w});
+                if (adj[i].size()>deg){
+                    auto weak=min_element(adj[i].begin(), adj[i].end(), [](edge a, edge b){return abs(a.w)<abs(b.w);});
+                    *weak=adj[i].back();
+                    adj[i].pop_back();
+                }
             }
         }
     }
-    nodes.push_back(child);
-    adj.push_back({});
-    node child=nodes[p];
+    adj[p].push_back({n, -0.5f});
+    adj[n].push_back({p, -0.5f});
+    if (adj[p].size()>deg){ //both parent and child have same length here so just check parent
+        auto weak=min_element(adj[p].begin(), adj[p].end(), [](edge a, edge b){return abs(a.w)<abs(b.w);});
+        *weak=adj[p].back();
+        adj[p].pop_back();
+        weak=min_element(adj[n].begin(), adj[n].end(), [](edge a, edge b){return abs(a.w)<abs(b.w);});
+        *weak=adj[n].back();
+        adj[n].pop_back();
+    }
     n++;
 }
 int main(){
