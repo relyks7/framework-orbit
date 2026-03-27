@@ -11,24 +11,25 @@ int d=4; //internal dimension
 int r=64; //low-rank dimension
 int deg=8; //maximum node degree
 float dt=0.01; //delta time
-float eta=1.0; //oja's learning rate **scaling parameter** (the learning rate is adapted based on stress)
-float alpha=0.3; //contribution of error/fast-timescale internal state adaptation rate
-float tau=15.0f; //stress threshold for mitosis
-float lambda=0.01f; //decay rate of h
+
+//greek-letter parameters - global, if these can be mutated they directly lead to reward hacking (death, decay (of things that can cause death), cost (in energy) and drain (of energy based on population) should be constants)
 float omega=0.01; //energy threshold for reaping/apoptosis
+float sigma=50.0f; //stress threshold for apoptosis
+float chi=0.01f; //energy cost of h (metabolic cost of thought)
+float nu=2.0f; //energy cost of mitosing
+float phi=1.61803398875; //golden ratio
 float rho=0.05; //decay rate for voltage
 float zeta=0.01; //decay rate for energy
-float theta=0.001; //voltage threshold for firing, triggering oja's, and spiking stress
 float kappa=0.5; //decay rate for stress
-float upsilon=1.0f; //decay rate for compressed input z (leaky integrator)
-float omicron=0.0005f; //tax of magnitude of a in energy (complexity)
-float gamma=2.0f; //weight of magnitude of h in voltage
-float chi=0.01f; //energy cost of h (metabolic cost of thought)
 float psi=500.0f; //parameter used in dynamic adjustment of energy drain
-float nu=2.0f; //energy cost of mitosing
-float delta=5.0f; //contribution of incoming signal to energy
-float sigma=100.0f;; //stress threshold for apoptosis
-float phi=1.61803398875; //golden ratio
+
+/*
+a note on node types:
+1. internal node - functions normally, this is the baseline.
+2. motor node - no different to an internal node, except it's state is read to alter the environment.
+3. input nodes - these nodes have their h force-set to a certain value. do not mitose or die. they also always fire.
+4. prior nodes - these nodes have their h force-set to a prior and their sig force-set to the current state (e.g. h="i am full", sig="i am hungry") to generate error when a prior is not satisfied.
+*/
 struct node{
     vector<float> h; //internal state
     vector<float> err; //error
@@ -40,9 +41,23 @@ struct node{
     float u; //uncertainty/leaky integrator of/overall average surprisal
     bool alive;
     bool is_input;
+    bool is_prior;
+    vector<float> sig;
     vector<vector<float>> a;
     vector<vector<float>> b;
     vector<vector<float>> b_t;
+    //greek-letter parameters - local, likely safe to mutate without enabling reward hacking
+    float eta=1.0; //oja's learning rate **scaling parameter** (the learning rate is adapted based on stress)
+    float alpha=0.3; //contribution of error/fast-timescale internal state adaptation rate
+    float tau=15.0f; //stress threshold for mitosis
+    float lambda=0.01f; //decay rate of h
+    float upsilon=1.0f; //decay rate for compressed input z (leaky integrator)
+    float theta=0.001; //voltage threshold for firing, triggering oja's, and spiking stress
+    float omicron=0.0005f; //tax of magnitude of a in energy (complexity)
+    float gamma=2.0f; //weight of magnitude of h in voltage
+    float mu=2.0f; //how much error/surprise affects the fristonian side of energy "gain" (in this case loss)
+    float delta=5.0f; //how much signal affects the "infomax" side of energy gain
+    float xi=1.0f; //"curiosity" - how much of the node likes signal, and how much of it dislikes error (exploration/exploitation balance)
 };
 struct edge{
     int from;
@@ -77,7 +92,7 @@ void sanger(vector<vector<float>> &a, const vector<float>& x, const vector<float
     for (int i=0;i<a.size();i++){
         for (int j=0;j<a[0].size();j++){
             t2[j]+=a[i][j]*y[i];
-            a[i][j]+=eta*lr*y[i]*(x[j]-t2[j]);
+            a[i][j]+=lr*y[i]*(x[j]-t2[j]);
         }
     }
 }
@@ -160,6 +175,29 @@ void mitosis(int p){ //no, kris did not mitose
     //     *weak=adj[n].back();
     //     adj[n].pop_back();
     // }
+    nodes[n].eta+=gaussian_noise(0.0f, 0.001f);
+    nodes[n].alpha+=gaussian_noise(0.0f, 0.001f);
+    nodes[n].tau+=gaussian_noise(0.0f, 0.001f);
+    nodes[n].lambda+=gaussian_noise(0.0f, 0.001f);
+    nodes[n].upsilon+=gaussian_noise(0.0f, 0.001f);
+    nodes[n].theta+=gaussian_noise(0.0f, 0.001f);
+    nodes[n].omicron+=gaussian_noise(0.0f, 0.001f);
+    nodes[n].gamma+=gaussian_noise(0.0f, 0.001f);
+    nodes[n].mu+=gaussian_noise(0.0f, 0.001f);
+    nodes[n].delta+=gaussian_noise(0.0f, 0.001f);
+    nodes[n].xi+=gaussian_noise(0.0f, 0.001f);
+
+    nodes[n].eta=min(max(nodes[n].eta, 0.0001f), 5.0f);
+    nodes[n].alpha=min(max(nodes[n].alpha, 0.0001f), 5.0f);
+    nodes[n].tau=min(max(nodes[n].tau, 1.0f), sigma-1.0f);
+    nodes[n].lambda=min(max(nodes[n].lambda, 0.0001f), 10.0f);
+    nodes[n].upsilon=min(max(nodes[n].upsilon, 0.0001f), 10.0f);
+    nodes[n].theta=min(max(nodes[n].theta, 0.0001f), 1.0f);
+    nodes[n].omicron=min(max(nodes[n].omicron, 0.0f), 0.1f);
+    nodes[n].gamma=min(max(nodes[n].gamma, 0.0f), 10.0f);
+    nodes[n].mu=min(max(nodes[n].mu, 0.001f), 20.0f);
+    nodes[n].delta=min(max(nodes[n].delta, 0.001f), 20.0f);
+    nodes[n].xi=min(max(nodes[n].xi, 0.0f), 1.0f);
     n++;
 }
 void update(){
@@ -169,33 +207,35 @@ void update(){
         new_h[i]=nodes[i].h;
         vector<float> z_in(r,0);
         int iptn=0;
-        for (auto x:adj[i]){
-            if (!nodes[x.from].alive) continue;
-            for (int j=0;j<r;j++){
-                z_in[j]+=x.w*nodes[x.from].out[j];
+        if (!nodes[i].is_prior){
+            for (auto x:adj[i]){
+                if (!nodes[x.from].alive) continue;
+                for (int j=0;j<r;j++){
+                    z_in[j]+=x.w*nodes[x.from].out[j];
+                }
+                iptn++;
             }
-            iptn++;
-        }
-        if (iptn>0){
-            for (int j=0;j<r;j++){
-                z_in[j]/=iptn;
+            if (iptn>0){
+                for (int j=0;j<r;j++){
+                    z_in[j]/=iptn;
+                }
             }
+            for (int j=0;j<r;j++){
+                nodes[i].z[j]+=dt*(z_in[j]-nodes[i].upsilon*nodes[i].z[j]);
+            }
+            nodes[i].sig=matvec(nodes[i].a, nodes[i].z);
         }
-        for (int j=0;j<r;j++){
-            nodes[i].z[j]+=dt*(z_in[j]-upsilon*nodes[i].z[j]);
-        }
-        vector<float> sig=matvec(nodes[i].a, nodes[i].z);
         float sig_mag=0.0f;
         for (int j=0;j<d;j++){
-            sig[j]=tanhf(sig[j]);
-            sig_mag+=sig[j]*sig[j];
+            nodes[i].sig[j]=tanhf(nodes[i].sig[j]);
+            sig_mag+=nodes[i].sig[j]*nodes[i].sig[j];
         }
         float surprise=0.0f;
         float h_mag=0.0f;
         float a_mag=0.0f;
         for (int j=0;j<d;j++){
-            nodes[i].err[j]=sig[j]-nodes[i].h[j];
-            new_h[i][j]+=dt*(alpha*nodes[i].err[j]-lambda*nodes[i].h[j]);
+            nodes[i].err[j]=nodes[i].sig[j]-nodes[i].h[j];
+            new_h[i][j]+=dt*(nodes[i].alpha*nodes[i].err[j]-nodes[i].lambda*nodes[i].h[j]);
             surprise+=nodes[i].err[j]*nodes[i].err[j];
             h_mag+=new_h[i][j]*new_h[i][j];
         }
@@ -205,19 +245,19 @@ void update(){
                 a_mag+=nodes[i].a[j][k]*nodes[i].a[j][k];
             }
         }
-        nodes[i].v+=dt*((surprise+gamma*h_mag)/d-rho*nodes[i].v); //add h_mag, the brain can no longer just hold an internal representation and ignore the retinas (dark room). if that representation is strong enough, it is forced to broadcast it, because merely holding that belief increases voltage.
-        nodes[i].e+=dt*((1.0/(nodes[i].u+1.0f))*delta*sig_mag-omicron*a_mag-chi*h_mag-zeta*(1.0f+n/psi)*nodes[i].e); 
+        nodes[i].v+=dt*((surprise+nodes[i].gamma*h_mag)/d-rho*nodes[i].v); //add h_mag, the brain can no longer just hold an internal representation and ignore the retinas/not broadcast it (dark room). if that representation is strong enough, it is forced to broadcast it, because merely holding that belief increases voltage.
+        nodes[i].e+=dt*((1.0/(nodes[i].u+1.0f))*(nodes[i].xi*nodes[i].delta*sig_mag-(1.0f-nodes[i].xi)*nodes[i].mu*surprise)-nodes[i].omicron*a_mag-chi*h_mag-zeta*(1.0f+n/psi)*nodes[i].e); 
         nodes[i].stress-=dt*kappa*nodes[i].stress;
-        if (nodes[i].is_input){
-            nodes[i].stress+=surprise*dt; //stress does not spike here otherwise the sensory input nodes undergo massive stress as they are locked on the input signal, causing issues
+        if (nodes[i].is_input || nodes[i].is_prior){
+            nodes[i].stress+=surprise*dt; //stress does not spike here otherwise the input/prior nodes undergo massive stress as they are locked on the input signal, causing issues - also, we want a continuous signal here
             nodes[i].out=matvec(nodes[i].b_t,nodes[i].err);
-            sanger(nodes[i].a, nodes[i].z, new_h[i], abs(tanhf(nodes[i].stress)));
+            if (!nodes[i].is_prior) sanger(nodes[i].a, nodes[i].z, new_h[i], nodes[i].eta*abs(tanhf(nodes[i].stress)));
         } else{
-            if (nodes[i].v>theta){
+            if (nodes[i].v>nodes[i].theta){
                 nodes[i].stress+=1.0f;
                 nodes[i].out=matvec(nodes[i].b_t,nodes[i].h);
                 nodes[i].v=0.0f;
-                sanger(nodes[i].a, nodes[i].z, new_h[i], abs(tanhf(nodes[i].stress))); //use new_h or current h?
+                sanger(nodes[i].a, nodes[i].z, new_h[i], nodes[i].eta*abs(tanhf(nodes[i].stress))); //use new_h or current h?
             } else{
                 fill(nodes[i].out.begin(), nodes[i].out.end(), 0.0f);
             }
@@ -230,13 +270,13 @@ void update(){
         }
     }
     for (int i=0;i<n;i++){
-        if ((!nodes[i].alive) || nodes[i].is_input) continue;
+        if ((!nodes[i].alive) || nodes[i].is_input || nodes[i].is_prior) continue;
         nodes[i].h=new_h[i];
     }
     int tn=n;
     for (int i=0;i<tn;i++){
-        if ((!nodes[i].alive) || nodes[i].is_input) continue;
-        if (nodes[i].stress>tau && nodes[i].e>nu){ //if it is too stressed but also has enough energy, mitose
+        if ((!nodes[i].alive) || nodes[i].is_input || nodes[i].is_prior) continue;
+        if (nodes[i].stress>nodes[i].tau && nodes[i].e>nu){ //if it is too stressed but also has enough energy, mitose
             nodes[i].e-=nu;
             mitosis(i);
         }
@@ -256,39 +296,69 @@ void update_lorenz(float &x, float &y, float &z, float dt) {
     z += dz * dt;
 }
 int main(){
+    //index0: input 1
     nodes.push_back({vector<float>(d,0),
                     vector<float>(d,0),
                     vector<float>(r,0),
                     vector<float>(r,0),
                     0,0,0,0,
-                    true,true,
+                    true,true,false,
+                    vector<float>(d,0),
                     vector<vector<float>>(d,vector<float>(r,0)),
                     vector<vector<float>>(d,vector<float>(r,0)),
                     vector<vector<float>>(r,vector<float>(d,0))});
+    //index1: input 2
     nodes.push_back({vector<float>(d,0),
                     vector<float>(d,0),
                     vector<float>(r,0),
                     vector<float>(r,0),
                     0,0,0,0,
-                    true,true,
+                    true,true,false,
+                    vector<float>(d,0),
                     vector<vector<float>>(d,vector<float>(r,0)),
                     vector<vector<float>>(d,vector<float>(r,0)),
                     vector<vector<float>>(r,vector<float>(d,0))});
+    //index2: input 3
     nodes.push_back({vector<float>(d,0),
                     vector<float>(d,0),
                     vector<float>(r,0),
                     vector<float>(r,0),
                     0,0,0,0,
-                    true,true,
+                    true,true,false,
+                    vector<float>(d,0),
                     vector<vector<float>>(d,vector<float>(r,0)),
                     vector<vector<float>>(d,vector<float>(r,0)),
                     vector<vector<float>>(r,vector<float>(d,0))});
+    //index3: internal 1
     nodes.push_back({vector<float>(d,0),
                     vector<float>(d,0),
                     vector<float>(r,0),
                     vector<float>(r,0),
                     5.0f,0,0,0,
-                    true,false,
+                    true,false,false,
+                    vector<float>(d,0),
+                    vector<vector<float>>(d,vector<float>(r,0)),
+                    vector<vector<float>>(d,vector<float>(r,0)),
+                    vector<vector<float>>(r,vector<float>(d,0))});
+    //index4: motor 1
+    nodes.push_back({vector<float>(d,0),
+                    vector<float>(d,0),
+                    vector<float>(r,0),
+                    vector<float>(r,0),
+                    5.0f,0,0,0,
+                    true,false,false,
+                    vector<float>(d,0),
+                    vector<vector<float>>(d,vector<float>(r,0)),
+                    vector<vector<float>>(d,vector<float>(r,0)),
+                    vector<vector<float>>(r,vector<float>(d,0))});
+    //index5: prior 1 - boredom (overall, i should have some difficulty predictig things)
+    nodes.push_back({vector<float>(d,0),
+                    vector<float>(d,0),
+                    vector<float>(r,0),
+                    vector<float>(r,0),
+                    5.0f,0,0,0,
+                    true,false,true,
+                    vector<float>(d,0),
                     vector<vector<float>>(d,vector<float>(r,0)),
                     vector<vector<float>>(d,vector<float>(r,0)),
                     vector<vector<float>>(r,vector<float>(d,0))});
@@ -311,6 +381,9 @@ int main(){
     adj[3].push_back({0, 1.0f});
     adj[3].push_back({1, 1.0f});
     adj[3].push_back({2, 1.0f});
+    adj[3].push_back({4, 1.0f});
+    adj[4].push_back({3, 1.0f});
+    adj[5].push_back({3, 1.0f});
     int fin=10000;
     int count=0;
     float curx=0.05f, cury=0.1f, curz=-0.01f;
@@ -353,13 +426,24 @@ int main(){
         // fill(nodes[1].h.begin(), nodes[1].h.end(), (cos(t) - 2.0f * cos(2.0f * t)) / 3.0f);
         // fill(nodes[2].h.begin(), nodes[2].h.end(), -sin(3.0f * t));
 
-        fill(nodes[0].h.begin(), nodes[0].h.end(),curx/20.0f); 
-        fill(nodes[1].h.begin(), nodes[1].h.end(),cury/20.0f);
-        fill(nodes[2].h.begin(), nodes[2].h.end(),(curz-25.0f)/25.0f);
-
+        // fill(nodes[0].h.begin(), nodes[0].h.end(),curx/20.0f); 
+        // fill(nodes[1].h.begin(), nodes[1].h.end(),cury/20.0f);
+        // fill(nodes[2].h.begin(), nodes[2].h.end(),(curz-25.0f)/25.0f);
+        
         // fill(nodes[0].h.begin(), nodes[0].h.end(),gaussian_noise(0.0f, 10.0f)); 
         // fill(nodes[1].h.begin(), nodes[1].h.end(),gaussian_noise(0.0f, 10.0f));
         // fill(nodes[2].h.begin(), nodes[2].h.end(),gaussian_noise(0.0f, 10.0f));
+        
+        fill(nodes[5].h.begin(), nodes[5].h.end(), 0.5);
+        float avgu=0.0f;
+        int talive=0;
+        for (int i=0;i<n;i++){
+            if (!nodes[i].alive) continue;
+            talive++;
+            avgu+=nodes[i].u;
+        }
+        avgu/=talive;
+        fill(nodes[5].sig.begin(), nodes[5].sig.end(), avgu);
         update();
     }
     return 0;
