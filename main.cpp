@@ -329,7 +329,18 @@ int main(){
                     vector<vector<float>>(d,vector<float>(r,0)),
                     vector<vector<float>>(d,vector<float>(r,0)),
                     vector<vector<float>>(r,vector<float>(d,0))});
-    //index3: internal 1
+    //index3: input 4
+    nodes.push_back({vector<float>(d,0),
+                    vector<float>(d,0),
+                    vector<float>(r,0),
+                    vector<float>(r,0),
+                    0,0,0,0,
+                    true,true,false,
+                    vector<float>(d,0),
+                    vector<vector<float>>(d,vector<float>(r,0)),
+                    vector<vector<float>>(d,vector<float>(r,0)),
+                    vector<vector<float>>(r,vector<float>(d,0))});
+    //index4: internal 1
     nodes.push_back({vector<float>(d,0),
                     vector<float>(d,0),
                     vector<float>(r,0),
@@ -340,7 +351,7 @@ int main(){
                     vector<vector<float>>(d,vector<float>(r,0)),
                     vector<vector<float>>(d,vector<float>(r,0)),
                     vector<vector<float>>(r,vector<float>(d,0))});
-    //index4: motor 1
+    //index5: motor 1
     nodes.push_back({vector<float>(d,0),
                     vector<float>(d,0),
                     vector<float>(r,0),
@@ -351,7 +362,18 @@ int main(){
                     vector<vector<float>>(d,vector<float>(r,0)),
                     vector<vector<float>>(d,vector<float>(r,0)),
                     vector<vector<float>>(r,vector<float>(d,0))});
-    //index5: prior 1 - boredom (overall, i should have some difficulty predictig things)
+    //index6: prior 1 - boredom (overall, the network should have some difficulty predictig things)
+    nodes.push_back({vector<float>(d,0),
+                    vector<float>(d,0),
+                    vector<float>(r,0),
+                    vector<float>(r,0),
+                    5.0f,0,0,0,
+                    true,false,true,
+                    vector<float>(d,0),
+                    vector<vector<float>>(d,vector<float>(r,0)),
+                    vector<vector<float>>(d,vector<float>(r,0)),
+                    vector<vector<float>>(r,vector<float>(d,0))});
+    //index7: prior 2 - hunger (the network wants to be full)
     nodes.push_back({vector<float>(d,0),
                     vector<float>(d,0),
                     vector<float>(r,0),
@@ -375,24 +397,28 @@ int main(){
     for (int i=0;i<n;i++){
         adj.push_back({});
     }
-    adj[0].push_back({3, 1.0f});
-    adj[1].push_back({3, 1.0f});
-    adj[2].push_back({3, 1.0f});
-    adj[3].push_back({0, 1.0f});
-    adj[3].push_back({1, 1.0f});
-    adj[3].push_back({2, 1.0f});
+    adj[0].push_back({4, 1.0f});
+    adj[1].push_back({4, 1.0f});
+    adj[2].push_back({4, 1.0f});
     adj[3].push_back({4, 1.0f});
+    adj[5].push_back({4, 1.0f});
+    adj[4].push_back({0, 1.0f});
+    adj[4].push_back({1, 1.0f});
+    adj[4].push_back({2, 1.0f});
     adj[4].push_back({3, 1.0f});
-    adj[5].push_back({3, 1.0f});
+    adj[4].push_back({5, 1.0f});
+    adj[4].push_back({6, 1.0f});
+    adj[4].push_back({7, 1.0f});
     int fin=10000;
     int count=0;
-    float curx=0.05f, cury=0.1f, curz=-0.01f;
+    //float curx=0.05f, cury=0.1f, curz=-0.01f;
+    float curx=0, cury=0;
+    int hunger=10;
+    float max_hunger=10;
+    float foodx=3, foody=3;
     for (float t=0;t<fin;t+=dt){
         count++;
-        update_lorenz(curx, cury, curz, dt);
-        if (count%100==0){
-
-        }
+        //update_lorenz(curx, cury, curz, dt);
         if (count % 1000 == 0) {
             cout << "t: " << fixed << setprecision(2) << t;
             for (int i=3;i<min(n,20);i++){
@@ -434,7 +460,11 @@ int main(){
         // fill(nodes[1].h.begin(), nodes[1].h.end(),gaussian_noise(0.0f, 10.0f));
         // fill(nodes[2].h.begin(), nodes[2].h.end(),gaussian_noise(0.0f, 10.0f));
         
-        fill(nodes[5].h.begin(), nodes[5].h.end(), 0.5);
+        fill(nodes[0].h.begin(), nodes[0].h.end(), curx); 
+        fill(nodes[1].h.begin(), nodes[1].h.end(), cury);
+        fill(nodes[2].h.begin(), nodes[2].h.end(), foodx);
+        fill(nodes[3].h.begin(), nodes[3].h.end(), foody);
+        fill(nodes[6].h.begin(), nodes[6].h.end(), 0.5);
         float avgu=0.0f;
         int talive=0;
         for (int i=0;i<n;i++){
@@ -443,8 +473,23 @@ int main(){
             avgu+=nodes[i].u;
         }
         avgu/=talive;
-        fill(nodes[5].sig.begin(), nodes[5].sig.end(), avgu);
+        fill(nodes[6].sig.begin(), nodes[6].sig.end(), avgu);
         update();
+        fill(nodes[7].h.begin(), nodes[7].h.end(), max_hunger);
+        fill(nodes[7].sig.begin(), nodes[7].sig.end(), hunger);
+        curx+=max(min(nodes[5].h[0], 0.5f), -0.5f);
+        cury+=max(min(nodes[5].h[1], 0.5f), -0.5f);
+        curx=max(min(curx, 4.0f), -4.0f);
+        cury=max(min(cury, 4.0f), -4.0f);
+        if (count%100==0){
+            hunger--;
+            hunger=max(hunger,0);
+        }
+        if (max(abs(curx-foodx), abs(cury-foody))<0.05){
+            hunger+=5;
+            foodx=(((count^(count<<5)^(count<<7)^(count<<11)^(count<<17)^(count/7))*0xbf58476d1ce4e5b9)%9) - 4.0f;
+            foody=(((count^(count<<6)^(count<<2)^(count>>5)^(count<<12)^(count/3))*0x94d049bb133111eb)%9) - 4.0f;
+        }
     }
     return 0;
 }
