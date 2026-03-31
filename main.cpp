@@ -6,7 +6,7 @@ float gaussian_noise(float mean, float stddev){
     return dist(rng);
 }
 //in hindsight using greek letters wasn't the best idea
-int n=4; //number of nodes
+int n=8; //number of nodes
 int d=4; //internal dimension
 int r=64; //low-rank dimension
 int deg=8; //maximum node degree
@@ -17,11 +17,12 @@ float omega=0.01; //energy threshold for reaping/apoptosis
 float sigma=50.0f; //stress threshold for apoptosis
 float chi=0.01f; //energy cost of h (metabolic cost of thought)
 float nu=2.0f; //energy cost of mitosing
-float phi=1.61803398875; //golden ratio
 float rho=0.05; //decay rate for voltage
 float zeta=0.01; //decay rate for energy
 float kappa=0.5; //decay rate for stress
 float psi=500.0f; //parameter used in dynamic adjustment of energy drain
+float phi=1.61803398875; //golden ratio
+float iota=1/phi; //decay rate for energy as it is passed backwards
 
 /*
 a note on node types:
@@ -36,12 +37,14 @@ struct node{
     vector<float> out; //emission
     vector<float> z; //storage variable for oja/accumulated projected postsynaptic activity
     float e; //energy - leaky integrator
+    float elig; //eligibility - leaky integrator
     float v; //voltage - liquid reservoir
     float stress; //aggregate/spiking integrator of surprisal
     float u; //uncertainty/leaky integrator of/overall average surprisal
     bool alive;
     bool is_input;
     bool is_prior;
+    bool is_motor;
     vector<float> sig;
     vector<vector<float>> a;
     vector<vector<float>> b;
@@ -251,17 +254,17 @@ void update(){
         if (nodes[i].is_input || nodes[i].is_prior){
             nodes[i].stress+=surprise*dt; //stress does not spike here otherwise the input/prior nodes undergo massive stress as they are locked on the input signal, causing issues - also, we want a continuous signal here
             nodes[i].out=matvec(nodes[i].b_t,nodes[i].err);
-            if (!nodes[i].is_prior) sanger(nodes[i].a, nodes[i].z, new_h[i], nodes[i].eta*abs(tanhf(nodes[i].stress)));
-        } else{
+            if (!nodes[i].is_prior) sanger(nodes[i].a, nodes[i].z, new_h[i], dt*nodes[i].eta*abs(tanhf(nodes[i].stress)));
+        } else {
             if (nodes[i].v>nodes[i].theta){
                 nodes[i].stress+=1.0f;
                 nodes[i].out=matvec(nodes[i].b_t,nodes[i].h);
                 nodes[i].v=0.0f;
-                sanger(nodes[i].a, nodes[i].z, new_h[i], nodes[i].eta*abs(tanhf(nodes[i].stress))); //use new_h or current h?
+                sanger(nodes[i].a, nodes[i].z, new_h[i], dt*nodes[i].eta*abs(tanhf(nodes[i].stress))); //use new_h or current h?
             } else{
                 fill(nodes[i].out.begin(), nodes[i].out.end(), 0.0f);
             }
-            if (nodes[i].e<omega || nodes[i].stress>sigma){
+            if ((nodes[i].e<omega || nodes[i].stress>sigma) && !nodes[i].is_motor){
                 nodes[i].alive=false;
             }
         }
@@ -301,8 +304,8 @@ int main(){
                     vector<float>(d,0),
                     vector<float>(r,0),
                     vector<float>(r,0),
-                    0,0,0,0,
-                    true,true,false,
+                    0,0,0,0,0,
+                    true,true,false,false,
                     vector<float>(d,0),
                     vector<vector<float>>(d,vector<float>(r,0)),
                     vector<vector<float>>(d,vector<float>(r,0)),
@@ -312,8 +315,8 @@ int main(){
                     vector<float>(d,0),
                     vector<float>(r,0),
                     vector<float>(r,0),
-                    0,0,0,0,
-                    true,true,false,
+                    0,0,0,0,0,
+                    true,true,false,false,
                     vector<float>(d,0),
                     vector<vector<float>>(d,vector<float>(r,0)),
                     vector<vector<float>>(d,vector<float>(r,0)),
@@ -323,8 +326,8 @@ int main(){
                     vector<float>(d,0),
                     vector<float>(r,0),
                     vector<float>(r,0),
-                    0,0,0,0,
-                    true,true,false,
+                    0,0,0,0,0,
+                    true,true,false,false,
                     vector<float>(d,0),
                     vector<vector<float>>(d,vector<float>(r,0)),
                     vector<vector<float>>(d,vector<float>(r,0)),
@@ -334,8 +337,8 @@ int main(){
                     vector<float>(d,0),
                     vector<float>(r,0),
                     vector<float>(r,0),
-                    0,0,0,0,
-                    true,true,false,
+                    0,0,0,0,0,
+                    true,true,false,false,
                     vector<float>(d,0),
                     vector<vector<float>>(d,vector<float>(r,0)),
                     vector<vector<float>>(d,vector<float>(r,0)),
@@ -345,8 +348,8 @@ int main(){
                     vector<float>(d,0),
                     vector<float>(r,0),
                     vector<float>(r,0),
-                    5.0f,0,0,0,
-                    true,false,false,
+                    5.0f,0,0,0,0,
+                    true,false,false,true,
                     vector<float>(d,0),
                     vector<vector<float>>(d,vector<float>(r,0)),
                     vector<vector<float>>(d,vector<float>(r,0)),
@@ -356,8 +359,8 @@ int main(){
                     vector<float>(d,0),
                     vector<float>(r,0),
                     vector<float>(r,0),
-                    5.0f,0,0,0,
-                    true,false,false,
+                    5.0f,0,0,0,0,
+                    true,false,false,true,
                     vector<float>(d,0),
                     vector<vector<float>>(d,vector<float>(r,0)),
                     vector<vector<float>>(d,vector<float>(r,0)),
@@ -367,8 +370,8 @@ int main(){
                     vector<float>(d,0),
                     vector<float>(r,0),
                     vector<float>(r,0),
-                    5.0f,0,0,0,
-                    true,false,true,
+                    5.0f,0,0,0,0,
+                    true,false,true,false,
                     vector<float>(d,0),
                     vector<vector<float>>(d,vector<float>(r,0)),
                     vector<vector<float>>(d,vector<float>(r,0)),
@@ -378,8 +381,8 @@ int main(){
                     vector<float>(d,0),
                     vector<float>(r,0),
                     vector<float>(r,0),
-                    5.0f,0,0,0,
-                    true,false,true,
+                    5.0f,0,0,0,0,
+                    true,false,true,false,
                     vector<float>(d,0),
                     vector<vector<float>>(d,vector<float>(r,0)),
                     vector<vector<float>>(d,vector<float>(r,0)),
@@ -413,26 +416,26 @@ int main(){
     int count=0;
     //float curx=0.05f, cury=0.1f, curz=-0.01f;
     float curx=0, cury=0;
-    int hunger=10;
-    float max_hunger=10;
+    float hunger=10;
+    float max_hunger=20;
     float foodx=3, foody=3;
     for (float t=0;t<fin;t+=dt){
         count++;
         //update_lorenz(curx, cury, curz, dt);
-        if (count % 1000 == 0) {
-            cout << "t: " << fixed << setprecision(2) << t;
-            for (int i=3;i<min(n,20);i++){
-                cout<<" | N"<<i<<"_stress: "<<fixed<<setprecision(4)<<setw(5)<<nodes[i].stress;
-                cout<<" | N"<<i<<"_energy: "<<fixed<<setprecision(4)<<setw(5)<<nodes[i].e;
-                cout<<" | N"<<i<<"_voltage: "<<fixed<<setprecision(4)<<setw(5)<<nodes[i].v;
-            }
-            if (n>20){
-                cout<<"... ("<<n<<" total nodes)";
-            } else{
-                cout<<" ("<<n<<" total nodes)";
-            }
-            cout<<endl;
-        }
+        // if (count % 1000 == 0) {
+        //     cout << "t: " << fixed << setprecision(2) << t;
+        //     for (int i=0;i<min(n,20);i++){
+        //         cout<<" | N"<<i<<"_stress: "<<fixed<<setprecision(4)<<setw(5)<<nodes[i].stress;
+        //         cout<<" | N"<<i<<"_energy: "<<fixed<<setprecision(4)<<setw(5)<<nodes[i].e;
+        //         cout<<" | N"<<i<<"_voltage: "<<fixed<<setprecision(4)<<setw(5)<<nodes[i].v;
+        //     }
+        //     if (n>20){
+        //         cout<<"... ("<<n<<" total nodes)";
+        //     } else{
+        //         cout<<" ("<<n<<" total nodes)";
+        //     }
+        //     cout<<endl;
+        // }
         if (count%100==0){
             cleanup();
         }
@@ -475,21 +478,22 @@ int main(){
         avgu/=talive;
         fill(nodes[6].sig.begin(), nodes[6].sig.end(), avgu);
         update();
-        fill(nodes[7].h.begin(), nodes[7].h.end(), max_hunger);
-        fill(nodes[7].sig.begin(), nodes[7].sig.end(), hunger);
+        fill(nodes[7].h.begin(), nodes[7].h.end(), 1.0f);
+        fill(nodes[7].sig.begin(), nodes[7].sig.end(), hunger/max_hunger);
         curx+=max(min(nodes[5].h[0], 0.5f), -0.5f);
         cury+=max(min(nodes[5].h[1], 0.5f), -0.5f);
         curx=max(min(curx, 4.0f), -4.0f);
         cury=max(min(cury, 4.0f), -4.0f);
         if (count%100==0){
             hunger--;
-            hunger=max(hunger,0);
+            hunger=max(hunger,0.0f);
         }
         if (max(abs(curx-foodx), abs(cury-foody))<0.05){
             hunger+=5;
             foodx=(((count^(count<<5)^(count<<7)^(count<<11)^(count<<17)^(count/7))*0xbf58476d1ce4e5b9)%9) - 4.0f;
             foody=(((count^(count<<6)^(count<<2)^(count>>5)^(count<<12)^(count/3))*0x94d049bb133111eb)%9) - 4.0f;
         }
+        cout<<"t: "<<t<<"|cx: "<<curx<<"|cy: "<<cury<<"|foodx: "<<foodx<<"|foody: "<<foody<<"|hunger: "<<hunger<<"/"<<max_hunger<<"|n: "<<n<<endl;
     }
     return 0;
 }
