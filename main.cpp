@@ -23,13 +23,14 @@ float kappa=0.5; //decay rate for stress
 float psi=500.0f; //parameter used in dynamic adjustment of energy drain
 float phi=1.61803398875; //golden ratio
 float iota=1/phi; //decay rate for energy as it is passed backwards
-
+float epsilon=0.9; //decay rate across edges for eligibility
+float beta0=0.5; //decay rate for eligibility across time (leaky integrator)
 /*
 a note on node types:
 1. internal node - functions normally, this is the baseline.
 2. motor node - no different to an internal node, except it's state is read to alter the environment.
-3. input nodes - these nodes have their h force-set to a certain value. do not mitose or die. they also always fire.
-4. prior nodes - these nodes have their h force-set to a prior and their sig force-set to the current state (e.g. h="i am full", sig="i am hungry") to generate error when a prior is not satisfied.
+3. input nodes - these nodes have their h force-unordered_set to a certain value. do not mitose or die. they also always fire.
+4. prior nodes - these nodes have their h force-unordered_set to a prior and their sig force-unordered_set to the current state (e.g. h="i am full", sig="i am hungry") to generate error when a prior is not satisfied.
 */
 struct node{
     vector<float> h; //internal state
@@ -65,9 +66,21 @@ struct node{
 struct edge{
     int from;
     float w; //w is technically deprecated, but will keep here just in case it proves to be useful. also helps mark edges as dead.
+    bool operator==(const edge& other) const {
+        return from==other.from && w==other.w;
+    }
+};
+struct ehash{
+    size_t operator()(const edge& e) const {
+        size_t h1 = std::hash<int>{}(e.from);
+        size_t h2 = std::hash<float>{}(e.w);
+        return h1 ^ (h2 << 1); 
+    }
 };
 vector<node> nodes{};
-vector<deque<edge>> adj{};
+using eset=unordered_set<edge, ehash>;
+vector<eset> adj{};
+vector<eset> radj{};
 vector<float> matvec(const vector<vector<float>>& a, const vector<float>& b){
     int n=a.size();
     int m=a[0].size();
@@ -111,18 +124,24 @@ void cleanup(){
         if (!nodes[i].alive) continue;
         new_nodes.push_back(nodes[i]);
     }
-    vector<deque<edge>> new_adj{};
+    vector<eset> new_adj{};
     for (int i=0;i<n;i++){
         if (!nodes[i].alive) continue;
         new_adj.push_back({});
         for (auto x:adj[i]){
             if ((!nodes[x.from].alive) || x.w==0.0f) continue;
-            new_adj[new_adj.size()-1].push_back({new_index[x.from], x.w});
+            new_adj[new_adj.size()-1].insert({new_index[x.from], x.w});
         }
     }
     nodes=new_nodes;
     adj=new_adj;
     n=nodes.size();
+    radj=vector<eset>(n, eset{});
+    for (int i=0;i<n;i++){
+        for (auto x:adj[i]){
+            radj[x.from].insert({i, x.w});
+        }
+    }
 }
 void mitosis(int p){ //no, kris did not mitose
     float ps=1.0f/phi;
@@ -141,33 +160,38 @@ void mitosis(int p){ //no, kris did not mitose
     nodes[p].e=ps*nodes[p].e;
     nodes[n].e=cs*nodes[n].e;
     adj.push_back({});
+    radj.push_back({});
     for (auto& x:adj[p]){
-        adj[n].push_back({x.from, x.w});
+        adj[n].insert({x.from, x.w});
+        radj[x.from].insert({n, x.w});
     }
     for (int i=0;i<n;i++){
         int sz=adj[i].size();
+        auto curp=adj[i].begin();
         for (int j=0;j<sz;j++){
-            if (adj[i][j].from==p){
+            if ((*curp).from==p){
                 if (adj[i].size()==deg){
-                    adj[i].pop_front();
+                    adj[i].erase(*adj[i].begin());
                 }
-                adj[i].push_back({n, adj[i][j].w});
+                adj[i].insert({n, (*curp).w});
+                radj[n].insert({i, (*curp).w});
                 // if (adj[i].size()>deg){
                 //     auto weak=min_element(adj[i].begin(), adj[i].end(), [](edge a, edge b){return abs(a.w)<abs(b.w);});
                 //     *weak=adj[i].back();
                 //     adj[i].pop_back();
                 // }
             }
+            curp=next(curp);
         }
     }
     if (adj[p].size()==deg){
-        adj[p].pop_front();
+        adj[p].erase(*adj[p].begin());;
     }
     if (adj[n].size()==deg){
-        adj[n].pop_front();
+        adj[n].erase(*adj[n].begin());;
     }
-    adj[p].push_back({n, 1.0f});
-    adj[n].push_back({p, 1.0f});
+    adj[p].insert({n, 1.0f});
+    adj[n].insert({p, 1.0f});
     // if (adj[p].size()>deg){
     //     auto weak=min_element(adj[p].begin(), adj[p].end(), [](edge a, edge b){return abs(a.w)<abs(b.w);});
     //     *weak=adj[p].back();
@@ -201,6 +225,7 @@ void mitosis(int p){ //no, kris did not mitose
     nodes[n].mu=min(max(nodes[n].mu, 0.001f), 20.0f);
     nodes[n].delta=min(max(nodes[n].delta, 0.001f), 20.0f);
     nodes[n].xi=min(max(nodes[n].xi, 0.0f), 1.0f);
+    nodes[n].elig=0.0f;
     n++;
 }
 void update(){
@@ -210,6 +235,8 @@ void update(){
         new_h[i]=nodes[i].h;
         vector<float> z_in(r,0);
         int iptn=0;
+        int optn=0;
+        nodes[i].elig*=beta0;
         if (!nodes[i].is_prior){
             for (auto x:adj[i]){
                 if (!nodes[x.from].alive) continue;
@@ -217,6 +244,14 @@ void update(){
                     z_in[j]+=x.w*nodes[x.from].out[j];
                 }
                 iptn++;
+            }
+            for (auto x:radj[i]){
+                if (!nodes[x.from].alive) continue;
+                optn++;
+            }
+            for (auto x:radj[i]){
+                if (!nodes[x.from].alive) continue;
+                nodes[x.from].elig+=nodes[i].elig*epsilon/optn;
             }
             if (iptn>0){
                 for (int j=0;j<r;j++){
@@ -264,7 +299,7 @@ void update(){
             } else{
                 fill(nodes[i].out.begin(), nodes[i].out.end(), 0.0f);
             }
-            if ((nodes[i].e<omega || nodes[i].stress>sigma) && !nodes[i].is_motor){
+            if ((nodes[i].e+nodes[i].elig<omega || nodes[i].stress>sigma) && !nodes[i].is_motor){
                 nodes[i].alive=false;
             }
         }
@@ -279,7 +314,7 @@ void update(){
     int tn=n;
     for (int i=0;i<tn;i++){
         if ((!nodes[i].alive) || nodes[i].is_input || nodes[i].is_prior) continue;
-        if (nodes[i].stress>nodes[i].tau && nodes[i].e>nu){ //if it is too stressed but also has enough energy, mitose
+        if (nodes[i].stress>nodes[i].tau && nodes[i].e+nodes[i].elig>nu){ //if it is too stressed but also has enough energy, mitose
             nodes[i].e-=nu;
             mitosis(i);
         }
@@ -400,18 +435,19 @@ int main(){
     for (int i=0;i<n;i++){
         adj.push_back({});
     }
-    adj[0].push_back({4, 1.0f});
-    adj[1].push_back({4, 1.0f});
-    adj[2].push_back({4, 1.0f});
-    adj[3].push_back({4, 1.0f});
-    adj[5].push_back({4, 1.0f});
-    adj[4].push_back({0, 1.0f});
-    adj[4].push_back({1, 1.0f});
-    adj[4].push_back({2, 1.0f});
-    adj[4].push_back({3, 1.0f});
-    adj[4].push_back({5, 1.0f});
-    adj[4].push_back({6, 1.0f});
-    adj[4].push_back({7, 1.0f});
+    adj[0].insert({4, 1.0f});
+    adj[1].insert({4, 1.0f});
+    adj[2].insert({4, 1.0f});
+    adj[3].insert({4, 1.0f});
+    adj[5].insert({4, 1.0f});
+    adj[4].insert({0, 1.0f});
+    adj[4].insert({1, 1.0f});
+    adj[4].insert({2, 1.0f});
+    adj[4].insert({3, 1.0f});
+    adj[4].insert({5, 1.0f});
+    adj[4].insert({6, 1.0f});
+    adj[4].insert({7, 1.0f});
+    cleanup();
     int fin=10000;
     int count=0;
     //float curx=0.05f, cury=0.1f, curz=-0.01f;
@@ -423,11 +459,11 @@ int main(){
         count++;
         //update_lorenz(curx, cury, curz, dt);
         // if (count % 1000 == 0) {
-        //     cout << "t: " << fixed << setprecision(2) << t;
+        //     cout << "t: " << fixed << unordered_setprecision(2) << t;
         //     for (int i=0;i<min(n,20);i++){
-        //         cout<<" | N"<<i<<"_stress: "<<fixed<<setprecision(4)<<setw(5)<<nodes[i].stress;
-        //         cout<<" | N"<<i<<"_energy: "<<fixed<<setprecision(4)<<setw(5)<<nodes[i].e;
-        //         cout<<" | N"<<i<<"_voltage: "<<fixed<<setprecision(4)<<setw(5)<<nodes[i].v;
+        //         cout<<" | N"<<i<<"_stress: "<<fixed<<unordered_setprecision(4)<<unordered_setw(5)<<nodes[i].stress;
+        //         cout<<" | N"<<i<<"_energy: "<<fixed<<unordered_setprecision(4)<<unordered_setw(5)<<nodes[i].e;
+        //         cout<<" | N"<<i<<"_voltage: "<<fixed<<unordered_setprecision(4)<<unordered_setw(5)<<nodes[i].v;
         //     }
         //     if (n>20){
         //         cout<<"... ("<<n<<" total nodes)";
@@ -444,7 +480,8 @@ int main(){
                 int r1=((count^(count<<5)^(count<<7)^(count<<11)^(count<<17)^(count/7))*0xbf58476d1ce4e5b9)%n;
                 int r2=((count^(count<<6)^(count<<2)^(count>>5)^(count<<12)^(count/3))*0x94d049bb133111eb)%n;
                 if (r1==r2) continue;
-                adj[r1].push_back({r2, 1.0f});
+                adj[r1].insert({r2, 1.0f});
+                radj[r2].insert({r1, 1.0f});
             }
         }
         // fill(nodes[0].h.begin(), nodes[0].h.end(), sin(t)); 
@@ -488,10 +525,16 @@ int main(){
             hunger--;
             hunger=max(hunger,0.0f);
         }
+        //parameters here are volatile and thus don't get a name
         if (max(abs(curx-foodx), abs(cury-foody))<0.05){
             hunger+=5;
             foodx=(((count^(count<<5)^(count<<7)^(count<<11)^(count<<17)^(count/7))*0xbf58476d1ce4e5b9)%9) - 4.0f;
             foody=(((count^(count<<6)^(count<<2)^(count>>5)^(count<<12)^(count/3))*0x94d049bb133111eb)%9) - 4.0f;
+            for (int i=0;i<n;i++){
+                if (nodes[i].is_motor){
+                    nodes[i].elig+=2.0;
+                }
+            }
         }
         cout<<"t: "<<t<<"|cx: "<<curx<<"|cy: "<<cury<<"|foodx: "<<foodx<<"|foody: "<<foody<<"|hunger: "<<hunger<<"/"<<max_hunger<<"|n: "<<n<<endl;
     }
