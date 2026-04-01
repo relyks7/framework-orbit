@@ -6,7 +6,7 @@ float gaussian_noise(float mean, float stddev){
     return dist(rng);
 }
 //in hindsight using greek letters wasn't the best idea
-int n=8; //number of nodes
+int n=7; //number of nodes
 int d=4; //internal dimension
 int r=64; //low-rank dimension
 int deg=8; //maximum node degree
@@ -411,17 +411,18 @@ int main(){
                     vector<vector<float>>(d,vector<float>(r,0)),
                     vector<vector<float>>(d,vector<float>(r,0)),
                     vector<vector<float>>(r,vector<float>(d,0))});
-    //index7: prior 2 - hunger (the network wants to be full)
-    nodes.push_back({vector<float>(d,0),
-                    vector<float>(d,0),
-                    vector<float>(r,0),
-                    vector<float>(r,0),
-                    5.0f,0,0,0,0,
-                    true,false,true,false,
-                    vector<float>(d,0),
-                    vector<vector<float>>(d,vector<float>(r,0)),
-                    vector<vector<float>>(d,vector<float>(r,0)),
-                    vector<vector<float>>(r,vector<float>(d,0))});
+    // //index7: prior 2 - hunger (the network wants to be full)
+    // nodes.push_back({vector<float>(d,0),
+    //                 vector<float>(d,0),
+    //                 vector<float>(r,0),
+    //                 vector<float>(r,0),
+    //                 5.0f,0,0,0,0,
+    //                 true,false,true,false,
+    //                 vector<float>(d,0),
+    //                 vector<vector<float>>(d,vector<float>(r,0)),
+    //                 vector<vector<float>>(d,vector<float>(r,0)),
+    //                 vector<vector<float>>(r,vector<float>(d,0))});
+    //currently removed in favour of eligibility
     for (int x=0;x<n;x++){
         for (int i=0;i<d;i++){
             for (int j=0;j<r;j++){
@@ -446,7 +447,7 @@ int main(){
     adj[4].insert({3, 1.0f});
     adj[4].insert({5, 1.0f});
     adj[4].insert({6, 1.0f});
-    adj[4].insert({7, 1.0f});
+    // adj[4].insert({7, 1.0f});
     cleanup();
     int fin=10000;
     int count=0;
@@ -515,8 +516,6 @@ int main(){
         avgu/=talive;
         fill(nodes[6].sig.begin(), nodes[6].sig.end(), avgu);
         update();
-        fill(nodes[7].h.begin(), nodes[7].h.end(), 1.0f);
-        fill(nodes[7].sig.begin(), nodes[7].sig.end(), hunger/max_hunger);
         curx+=max(min(nodes[5].h[0], 0.5f), -0.5f);
         cury+=max(min(nodes[5].h[1], 0.5f), -0.5f);
         curx=max(min(curx, 4.0f), -4.0f);
@@ -528,8 +527,8 @@ int main(){
         //parameters here are volatile and thus don't get a name
         if (max(abs(curx-foodx), abs(cury-foody))<0.05){
             hunger+=5;
-            foodx=(((count^(count<<5)^(count<<7)^(count<<11)^(count<<17)^(count/7))*0xbf58476d1ce4e5b9)%9) - 4.0f;
-            foody=(((count^(count<<6)^(count<<2)^(count>>5)^(count<<12)^(count/3))*0x94d049bb133111eb)%9) - 4.0f;
+            foodx=(((count^(count<<5)^(count<<7)^(count<<11)^(count<<17)^(count/7))*0xbf58476d1ce4e5b9)%900)/100 - 4.0f;
+            foody=(((count^(count<<6)^(count<<2)^(count>>5)^(count<<12)^(count/3))*0x94d049bb133111eb)%900)/100 - 4.0f;
             for (int i=0;i<n;i++){
                 if (nodes[i].is_motor){
                     nodes[i].elig+=2.0;
