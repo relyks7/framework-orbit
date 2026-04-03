@@ -245,11 +245,11 @@ void update(){
                 }
                 iptn++;
             }
-            for (auto x:radj[i]){
+            for (auto x:adj[i]){
                 if (!nodes[x.from].alive) continue;
                 optn++;
             }
-            for (auto x:radj[i]){
+            for (auto x:adj[i]){
                 if (!nodes[x.from].alive) continue;
                 nodes[x.from].elig+=nodes[i].elig*epsilon/optn;
             }
@@ -289,13 +289,13 @@ void update(){
         if (nodes[i].is_input || nodes[i].is_prior){
             nodes[i].stress+=surprise*dt; //stress does not spike here otherwise the input/prior nodes undergo massive stress as they are locked on the input signal, causing issues - also, we want a continuous signal here
             nodes[i].out=matvec(nodes[i].b_t,nodes[i].err);
-            if (!nodes[i].is_prior) sanger(nodes[i].a, nodes[i].z, new_h[i], dt*nodes[i].eta*abs(tanhf(nodes[i].stress)));
+            if (!nodes[i].is_prior) sanger(nodes[i].a, nodes[i].z, new_h[i], dt*nodes[i].eta*abs(tanhf(nodes[i].stress))*abs(tanhf(nodes[i].elig+nodes[i].e)));
         } else {
             if (nodes[i].v>nodes[i].theta){
                 nodes[i].stress+=1.0f;
                 nodes[i].out=matvec(nodes[i].b_t,nodes[i].h);
                 nodes[i].v=0.0f;
-                sanger(nodes[i].a, nodes[i].z, new_h[i], dt*nodes[i].eta*abs(tanhf(nodes[i].stress))); //use new_h or current h?
+                sanger(nodes[i].a, nodes[i].z, new_h[i], dt*nodes[i].eta*abs(tanhf(nodes[i].stress))*abs(tanhf(nodes[i].elig+nodes[i].e))); //use new_h or current h?
             } else{
                 fill(nodes[i].out.begin(), nodes[i].out.end(), 0.0f);
             }
@@ -516,8 +516,8 @@ int main(){
         avgu/=talive;
         fill(nodes[6].sig.begin(), nodes[6].sig.end(), avgu);
         update();
-        curx+=max(min(nodes[5].h[0], 0.5f), -0.5f);
-        cury+=max(min(nodes[5].h[1], 0.5f), -0.5f);
+        curx+=max(min(nodes[5].out[0], 0.5f), -0.5f);
+        cury+=max(min(nodes[5].out[1], 0.5f), -0.5f);
         curx=max(min(curx, 4.0f), -4.0f);
         cury=max(min(cury, 4.0f), -4.0f);
         if (count%100==0){
