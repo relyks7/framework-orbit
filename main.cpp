@@ -273,7 +273,7 @@ void update(){
         float a_mag=0.0f;
         for (int j=0;j<d;j++){
             nodes[i].err[j]=nodes[i].sig[j]-nodes[i].h[j];
-            new_h[i][j]+=dt*(nodes[i].alpha*nodes[i].err[j]-nodes[i].lambda*nodes[i].h[j]);
+            new_h[i][j]+=dt*(nodes[i].alpha*nodes[i].err[j]-nodes[i].lambda*nodes[i].h[j]+gaussian_noise(0.0f,1.0f/(max(0.0f,nodes[i].e+nodes[i].elig)+0.01f))); //low energy means noise (inhibitory bridge from energy to error)
             surprise+=nodes[i].err[j]*nodes[i].err[j];
             h_mag+=new_h[i][j]*new_h[i][j];
         }
@@ -284,18 +284,18 @@ void update(){
             }
         }
         nodes[i].v+=dt*((surprise+nodes[i].gamma*h_mag)/d-rho*nodes[i].v); //add h_mag, the brain can no longer just hold an internal representation and ignore the retinas/not broadcast it (dark room). if that representation is strong enough, it is forced to broadcast it, because merely holding that belief increases voltage.
-        nodes[i].e+=dt*((1.0/(nodes[i].u+1.0f))*(nodes[i].xi*nodes[i].delta*sig_mag-(1.0f-nodes[i].xi)*nodes[i].mu*surprise)-nodes[i].omicron*a_mag-chi*h_mag-zeta*(1.0f+n/psi)*nodes[i].e); 
+        nodes[i].e+=dt*((1.0/(nodes[i].u+1.0f))*(nodes[i].xi*nodes[i].delta*sig_mag-(1.0f-nodes[i].xi)*nodes[i].mu*surprise)-nodes[i].omicron*a_mag-chi*h_mag-zeta*(1.0f+n/psi)*nodes[i].e); //this also contains inhibitory bridge from error to energy
         nodes[i].stress-=dt*kappa*nodes[i].stress;
         if (nodes[i].is_input || nodes[i].is_prior){
             nodes[i].stress+=surprise*dt; //stress does not spike here otherwise the input/prior nodes undergo massive stress as they are locked on the input signal, causing issues - also, we want a continuous signal here
             nodes[i].out=matvec(nodes[i].b_t,nodes[i].err);
-            if (!nodes[i].is_prior) sanger(nodes[i].a, nodes[i].z, new_h[i], dt*nodes[i].eta*abs(tanhf(nodes[i].stress))*abs(tanhf(nodes[i].elig+nodes[i].e)));
+            if (!nodes[i].is_prior) sanger(nodes[i].a, nodes[i].z, new_h[i], dt*nodes[i].eta*abs(tanhf(nodes[i].stress)));
         } else {
             if (nodes[i].v>nodes[i].theta){
                 nodes[i].stress+=1.0f;
                 nodes[i].out=matvec(nodes[i].b_t,nodes[i].h);
                 nodes[i].v=0.0f;
-                sanger(nodes[i].a, nodes[i].z, new_h[i], dt*nodes[i].eta*abs(tanhf(nodes[i].stress))*abs(tanhf(nodes[i].elig+nodes[i].e))); //use new_h or current h?
+                sanger(nodes[i].a, nodes[i].z, nodes[i].h, dt*nodes[i].eta*abs(tanhf(nodes[i].stress)));
             } else{
                 fill(nodes[i].out.begin(), nodes[i].out.end(), 0.0f);
             }
@@ -539,3 +539,6 @@ int main(){
     }
     return 0;
 }
+//interesting notes to implement:
+// 1. something called "generalized coordinates of motion" that i heard about, apparently also use derivative of sig and h
+// 2. completely replace sanger's with a one-step gradient descent - it's not backpropogated, and is essentially delta rule
