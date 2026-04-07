@@ -103,12 +103,19 @@ vector<vector<float>> outer_prod(const vector<float>& a, const vector<float>& b)
     }
     return c;
 }
-void sanger(vector<vector<float>> &a, const vector<float>& x, const vector<float>& y, float lr){
-    vector<float> t2(a[0].size(), 0);
+// void sanger(vector<vector<float>> &a, const vector<float>& x, const vector<float>& y, float lr){
+//     vector<float> t2(a[0].size(), 0);
+//     for (int i=0;i<a.size();i++){
+//         for (int j=0;j<a[0].size();j++){
+//             t2[j]+=a[i][j]*y[i];
+//             a[i][j]+=lr*y[i]*(x[j]-t2[j]);
+//         }
+//     }
+// }
+void delta_rule(vector<vector<float>> &a, const vector<float>&x, const vector<float>&err, float lr){
     for (int i=0;i<a.size();i++){
         for (int j=0;j<a[0].size();j++){
-            t2[j]+=a[i][j]*y[i];
-            a[i][j]+=lr*y[i]*(x[j]-t2[j]);
+            a[i][j]-=lr*err[i]*x[j];
         }
     }
 }
@@ -289,13 +296,13 @@ void update(){
         if (nodes[i].is_input || nodes[i].is_prior){
             nodes[i].stress+=surprise*dt; //stress does not spike here otherwise the input/prior nodes undergo massive stress as they are locked on the input signal, causing issues - also, we want a continuous signal here
             nodes[i].out=matvec(nodes[i].b_t,nodes[i].err);
-            if (!nodes[i].is_prior) sanger(nodes[i].a, nodes[i].z, new_h[i], dt*nodes[i].eta*abs(tanhf(nodes[i].stress)));
+            if (!nodes[i].is_prior) delta_rule(nodes[i].a, nodes[i].err, new_h[i], dt*nodes[i].eta*abs(tanhf(nodes[i].stress)));
         } else {
             if (nodes[i].v>nodes[i].theta){
                 nodes[i].stress+=1.0f;
                 nodes[i].out=matvec(nodes[i].b_t,nodes[i].h);
                 nodes[i].v=0.0f;
-                sanger(nodes[i].a, nodes[i].z, nodes[i].h, dt*nodes[i].eta*abs(tanhf(nodes[i].stress)));
+                delta_rule(nodes[i].a, nodes[i].err, new_h[i], dt*nodes[i].eta*abs(tanhf(nodes[i].stress)));
             } else{
                 fill(nodes[i].out.begin(), nodes[i].out.end(), 0.0f);
             }
@@ -542,3 +549,8 @@ int main(){
 //interesting notes to implement:
 // 1. something called "generalized coordinates of motion" that i heard about, apparently also use derivative of sig and h
 // 2. completely replace sanger's with a one-step gradient descent - it's not backpropogated, and is essentially delta rule
+// 3. remove voltage spiking, it's useless here and messes with the gradient descent
+// 4. no random edge insertion - instead do nodes with high correlation
+// 5. nodes broadcast error - figure out how the top-down bottom-up thing works later
+// 6. zeta, tau, eta must be dynamic or used dynamically - i.e. give the system some buffer against death
+// 7. learning is costly
