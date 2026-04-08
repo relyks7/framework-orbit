@@ -56,7 +56,7 @@ struct node{
     float tau=15.0f; //stress threshold for mitosis
     float lambda=0.01f; //decay rate of h
     float upsilon=1.0f; //decay rate for compressed input z (leaky integrator)
-    float theta=0.001; //voltage threshold for firing, triggering oja's, and spiking stress
+    //float theta=0.001; //voltage threshold for firing, triggering oja's, and spiking stress
     float omicron=0.0005f; //tax of magnitude of a in energy (complexity)
     float gamma=2.0f; //weight of magnitude of h in voltage
     float mu=2.0f; //how much error/surprise affects the fristonian side of energy "gain" (in this case loss)
@@ -214,7 +214,7 @@ void mitosis(int p){ //no, kris did not mitose
     nodes[n].tau+=gaussian_noise(0.0f, 0.001f);
     nodes[n].lambda+=gaussian_noise(0.0f, 0.001f);
     nodes[n].upsilon+=gaussian_noise(0.0f, 0.001f);
-    nodes[n].theta+=gaussian_noise(0.0f, 0.001f);
+    //nodes[n].theta+=gaussian_noise(0.0f, 0.001f);
     nodes[n].omicron+=gaussian_noise(0.0f, 0.001f);
     nodes[n].gamma+=gaussian_noise(0.0f, 0.001f);
     nodes[n].mu+=gaussian_noise(0.0f, 0.001f);
@@ -226,7 +226,7 @@ void mitosis(int p){ //no, kris did not mitose
     nodes[n].tau=min(max(nodes[n].tau, 1.0f), sigma-1.0f);
     nodes[n].lambda=min(max(nodes[n].lambda, 0.0001f), 10.0f);
     nodes[n].upsilon=min(max(nodes[n].upsilon, 0.0001f), 10.0f);
-    nodes[n].theta=min(max(nodes[n].theta, 0.0001f), 1.0f);
+    //nodes[n].theta=min(max(nodes[n].theta, 0.0001f), 1.0f);
     nodes[n].omicron=min(max(nodes[n].omicron, 0.0f), 0.1f);
     nodes[n].gamma=min(max(nodes[n].gamma, 0.0f), 10.0f);
     nodes[n].mu=min(max(nodes[n].mu, 0.001f), 20.0f);
@@ -290,22 +290,22 @@ void update(){
                 a_mag+=nodes[i].a[j][k]*nodes[i].a[j][k];
             }
         }
-        nodes[i].v+=dt*((surprise+nodes[i].gamma*h_mag)/d-rho*nodes[i].v); //add h_mag, the brain can no longer just hold an internal representation and ignore the retinas/not broadcast it (dark room). if that representation is strong enough, it is forced to broadcast it, because merely holding that belief increases voltage.
-        nodes[i].e+=dt*((1.0/(nodes[i].u+1.0f))*(nodes[i].xi*nodes[i].delta*sig_mag-(1.0f-nodes[i].xi)*nodes[i].mu*surprise)-nodes[i].omicron*a_mag-chi*h_mag-zeta*(1.0f+n/psi)*nodes[i].e); //this also contains inhibitory bridge from error to energy
+        // nodes[i].v+=dt*((surprise+nodes[i].gamma*h_mag)/d-rho*nodes[i].v); //add h_mag, the brain can no longer just hold an internal representation and ignore the retinas/not broadcast it (dark room). if that representation is strong enough, it is forced to broadcast it, because merely holding that belief increases voltage.
+        nodes[i].e+=dt*((1.0/(nodes[i].u+1.0f))*(nodes[i].xi*nodes[i].delta*sig_mag-(1.0f-nodes[i].xi)*nodes[i].mu*surprise)-nodes[i].omicron*a_mag-chi*h_mag-zeta*(1.0f+n/psi)*nodes[i].e); //this needs to be reworked
         nodes[i].stress-=dt*kappa*nodes[i].stress;
         if (nodes[i].is_input || nodes[i].is_prior){
             nodes[i].stress+=surprise*dt; //stress does not spike here otherwise the input/prior nodes undergo massive stress as they are locked on the input signal, causing issues - also, we want a continuous signal here
             nodes[i].out=matvec(nodes[i].b_t,nodes[i].err);
             if (!nodes[i].is_prior) delta_rule(nodes[i].a, nodes[i].err, new_h[i], dt*nodes[i].eta*abs(tanhf(nodes[i].stress)));
         } else {
-            if (nodes[i].v>nodes[i].theta){
-                nodes[i].stress+=1.0f;
-                nodes[i].out=matvec(nodes[i].b_t,nodes[i].h);
-                nodes[i].v=0.0f;
-                delta_rule(nodes[i].a, nodes[i].err, new_h[i], dt*nodes[i].eta*abs(tanhf(nodes[i].stress)));
-            } else{
-                fill(nodes[i].out.begin(), nodes[i].out.end(), 0.0f);
-            }
+            // if (nodes[i].v>nodes[i].theta){
+            nodes[i].stress+=surprise*dt;
+            nodes[i].out=matvec(nodes[i].b_t,nodes[i].err); //broadcast err?
+            //nodes[i].v=0.0f;
+            delta_rule(nodes[i].a, nodes[i].err, new_h[i], dt*nodes[i].eta*abs(tanhf(nodes[i].stress)));
+            // } else{
+            fill(nodes[i].out.begin(), nodes[i].out.end(), 0.0f);
+            // }
             if ((nodes[i].e+nodes[i].elig<omega || nodes[i].stress>sigma) && !nodes[i].is_motor){
                 nodes[i].alive=false;
             }
@@ -548,9 +548,9 @@ int main(){
 }
 //interesting notes to implement:
 // 1. something called "generalized coordinates of motion" that i heard about, apparently also use derivative of sig and h
-// 2. completely replace sanger's with a one-step gradient descent - it's not backpropogated, and is essentially delta rule
-// 3. remove voltage spiking, it's useless here and messes with the gradient descent
-// 4. no random edge insertion - instead do nodes with high correlation
+// ✓ 2. completely replace sanger's with a one-step gradient descent - it's not backpropogated, and is essentially delta rule
+// ✓ 3. remove voltage spiking, it's useless here and messes with the gradient descent
+// 4. no random edge insertion - instead do nodes with high correlation (note: how? perhaps every few ticks)
 // 5. nodes broadcast error - figure out how the top-down bottom-up thing works later
 // 6. zeta, tau, eta must be dynamic or used dynamically - i.e. give the system some buffer against death
-// 7. learning is costly
+// 7. low energy means low learning, high learning means fast energy consumption - tie everything together
