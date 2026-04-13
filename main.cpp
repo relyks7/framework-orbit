@@ -572,6 +572,7 @@ void update_lorenz(float &x, float &y, float &z, float dt) {
 // 4. no random edge insertion - instead do nodes with high correlation (note: how? perhaps every few ticks)
 // 1/2 5. nodes broadcast error - figure out how the top-down bottom-up thing works later
 // 6. zeta, tau, eta must be dynamic or used dynamically - i.e. give the system some buffer against death       ↖
-// 1/2 7. low energy means low learning, high learning means fast energy consumption - tie everything together      ↙ 
-
+// 1/2 7. low energy means low learning, high learning means lower (?) energy consumption - tie everything together (mess up metabolism actually, **INVERT THIS**)↙ 
+// 8. parent and child have different mechanics for broadcast and update
+// 9. sleep-wake difference - one is darwinian, the other calculus (former is sparse, latter is frequent/default state)
 //FINAL: remove unnecessary components
