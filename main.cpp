@@ -7,14 +7,15 @@ float gaussian_noise(float mean, float stddev){
 }
 uniform_real_distribution<float> disf(0.0f, 1.0f);
 float dt=0.01;
-int n=50;
-int d=8;
+int n=100;
+int d=16;
 int r=64;
-int deg=8;
+int deg=16;
 float dh_chl_contrib=1.0f;
 float dh_par_contrib=0.6f;
 float fast_adaptation_rate=10.0f;
-float slow_adaptation_learning_rate=0.005f;
+float slow_adaptation_learning_rate_a=0.005f;
+float slow_adaptation_learning_rate_b=0.0075f; //a bit larger due to it's reception of error requiring more volatile shift
 float h_decay=0.05f;
 float e_decay=0.01f;
 float signal_income=0.2f;
@@ -29,12 +30,13 @@ vector<bool> input(n,false);
 vector<vector<int>> radj(n, vector<int>{});
 vector<vector<float>> h(n, vector<float>(d,0)); //internal state
 vector<vector<float>> dh(n, vector<float>(d,0));
-vector<float> e(n, 0); //energy
+vector<float> e(n, 0.5); //energy, initially high
 vector<vector<float>> err(n, vector<float>(d,0)); //error
 vector<float> u(n, 0); //uncertainty
 vector<vector<vector<float>>> a(n,vector<vector<float>>(d,vector<float>(r,0))); //receptors
 vector<vector<vector<float>>> da(n,vector<vector<float>>(d,vector<float>(r,0)));
 vector<vector<vector<float>>> b(n,vector<vector<float>>(d,vector<float>(r,0))); //emitters
+vector<vector<vector<float>>> db(n,vector<vector<float>>(d,vector<float>(r,0)));
 vector<float> matvec(const vector<vector<float>>& a, const vector<float>& b){
     int n=a.size();
     int m=a[0].size();
@@ -80,12 +82,12 @@ void delta_rule(vector<vector<float>> &a, const vector<float>&x, const vector<fl
 float mag(const vector<float>&a){
     float ret=0;
     for (auto i:a) ret+=i*i;
-    return ret;
+    return ret/a.size();
 }
 float mag(const vector<vector<float>>&a){
     float ret=0;
     for (auto i:a) for (auto x:i) ret+=x*x;
-    return ret;
+    return ret/(a.size()*a[0].size());
 }
 void generate_smallworld(float p){
     uniform_int_distribution<int> disi(0,n-2);
@@ -102,13 +104,16 @@ void generate_smallworld(float p){
         }
     }
 }
-float curx=0.25f, cury=0.25f, foodx=0.5f, foody=0.5f, bound=1.0f, fr=0.1, speed=2.0f;
+float curx=0.25f, cury=0.25f, foodx=0.5f, foody=0.5f, bound=1.0f, fr=0.05, speed=2.0f;
 float hunger=1.0f;
+float within_dist=0.2f;
+int cur_dir=1;
 void update(){
     vector<float> nu=u;
     vector<vector<float>> nh=h;
     vector<vector<float>> nerr=err;
     vector<vector<vector<float>>> na=a;
+    vector<vector<vector<float>>> nb=b;
     for (int i=0;i<n;i++){
         //step 1: aggregate belief from parents
         vector<float> emitted_signal_par(r,0);
@@ -120,14 +125,12 @@ void update(){
         }
         vector<float> received_signal_par=matvec(a[i], emitted_signal_par);
         float surprise=0.0f; //surprise=squared sum of error
-        float sig_mag=0.0f; //magnitude of received signal
         for (int j=0;j<d;j++){
             if (radj[i].size()>0) received_signal_par[j]/=radj[i].size();
             nerr[i][j]=received_signal_par[j]-h[i][j];
-            sig_mag+=received_signal_par[j]*received_signal_par[j];
             //XXX: temporary addon to add hunger prior
             if (i==0){
-                nerr[i][j]=((1.0f-hunger)+sqrtf(pow(curx-foodx, 2)+pow(cury-foody, 2)))*2.0f;
+                nerr[i][j]=((1.0f-hunger)*sqrtf(pow(curx-foodx, 2)+pow(cury-foody, 2)))*2.5f;
             }
             surprise+=nerr[i][j]*nerr[i][j];
         }
@@ -143,8 +146,8 @@ void update(){
         vector<float> received_signal_chl=matvec(b[i], emitted_signal_chl);
         for (int j=0;j<d;j++){
             if (adj[i].size()>0) received_signal_chl[j]/=adj[i].size();
-            sig_mag+=received_signal_chl[j]*received_signal_chl[j];
         }
+        float sig_mag=mag(received_signal_par)+mag(received_signal_chl); //magnitude of received signal
         //move h
         for (int j=0;j<d;j++){
             if (input[i]) continue;
@@ -154,13 +157,15 @@ void update(){
             nh[i][j]+=dh[i][j];
         }
         //move a
-        delta_rule(na[i], emitted_signal_par, nerr[i], slow_adaptation_learning_rate/(e[i]+0.1), da[i]); //need to weight this by energy etc.
+        delta_rule(na[i], emitted_signal_par, nerr[i], slow_adaptation_learning_rate_a/(e[i]+0.1), da[i]);
+        //move b (hypothesis here - align the errors, invert A=sort of "unify/harmonize" the whole network)
+        delta_rule(nb[i], emitted_signal_chl, nerr[i], slow_adaptation_learning_rate_b/(e[i]+0.1), db[i]);
         //update energy
         e[i]+=dt*(1.0/(1.0f+u[i])*(curiosity*signal_income*sig_mag-stability*surprise_tax*surprise)-cost_of_thought*mag(dh[i])-cost_of_complexity*mag(da[i])-e_decay*e[i]);
         e[i]=max(0.0f, e[i]);
         nu[i]=min(nu[i],10.0f);
     }
-    h=nh; err=nerr; a=na; u=nu;
+    h=nh; err=nerr; a=na; b=nb; u=nu;
 }
 int main(){
     generate_smallworld(0.1f);
@@ -173,18 +178,36 @@ int main(){
         }
     }
     for (int i=0;i<50000;i++){
-        for(int j=1;j<=4;j++) input[j]=true;
-        fill(dh[1].begin(), dh[1].end(), curx-h[1][0]);
-        fill(h[1].begin(), h[1].end(), curx);
-        fill(dh[2].begin(), dh[2].end(), cury-h[2][0]);
-        fill(h[2].begin(), h[2].end(), cury);
-        fill(dh[3].begin(), dh[3].end(), foodx-h[3][0]);
-        fill(h[3].begin(), h[3].end(), foodx);
-        fill(dh[4].begin(), dh[4].end(), foody-h[4][0]);
-        fill(h[4].begin(), h[4].end(), foody);
+        // if (i==10000){
+        //     cout<<"STOPPED A LEARNING";
+        //     a_decay=0.0f;
+        //     slow_adaptation_learning_rate=0.0f;
+        // }
+
+        //0 is prior, 1 is eyes, 2 is motor
+        input[1]=true;
+        float disx=foodx-curx;
+        float disy=foody-cury;
+        int disxi, disyi;
+        if (disx<-within_dist) disxi=0;
+        else if (disx>within_dist) disxi=2;
+        else disxi=1;
+        if (disy<-within_dist) disyi=0;
+        else if (disy>within_dist) disyi=2;
+        else disyi=1;
+        cur_dir=disxi*3+disyi+1;
+        for (int i=0;i<16;i++){
+            if (i==cur_dir){
+                dh[1][i]=1.0f-h[1][i];
+                h[1][i]=1.0f;
+            } else{
+                dh[1][i]=0.0f-h[1][i];
+                h[1][i]=0.0f;
+            }
+        }
         update();
-        curx+=dt*speed*tanhf(h[5][0]);
-        cury+=dt*speed*tanhf(h[5][1]);
+        curx+=dt*speed*tanhf(h[2][0]);
+        cury+=dt*speed*tanhf(h[2][1]);
         curx=max(0.0f,min(bound,curx));
         cury=max(0.0f,min(bound,cury));
         if (sqrtf(pow(curx-foodx, 2)+pow(cury-foody, 2))<fr){
@@ -194,7 +217,7 @@ int main(){
         }
         hunger-=0.01*dt;
         hunger=max(0.0f,min(1.0f,hunger));
-        if (i%50==0){
+        if (i%5==0){
             cout<<setprecision(3)<<"tick: "<<setw(6)<<i<<"|curx:"<<setw(6)<<curx<<"|cury: "<<setw(6)<<cury<<"|foodx: "<<setw(6)<<foodx<<"|foody: "<<setw(6)<<foody<<"|hunger: "<<setw(6)<<hunger<<endl;
         }
     }
