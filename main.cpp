@@ -12,6 +12,7 @@ int d=16;
 int r=64;
 int deg=16;
 float starting_energy=0.5f;
+float delta_clamp=1.0f;
 float fr=0.05f; //food radius
 float speed=2.0f;
 float bound=1.0f;
@@ -64,7 +65,7 @@ float mag(const vector<vector<float>>&a){
 void delta_rule(vector<vector<float>> &a, const vector<float>&x, const vector<float>&err, float lr, vector<vector<float>>& da, float a_dec){
     for (int i=0;i<a.size();i++){
         for (int j=0;j<a[0].size();j++){
-            da[i][j]=-lr*dt*err[i]*x[j];
+            da[i][j]=max(-delta_clamp, min(delta_clamp, -lr*dt*err[i]*x[j]));
             a[i][j]+=-dt*a_dec*a[i][j]-da[i][j];
         }
     }
@@ -84,7 +85,7 @@ void generate_smallworld(float p, vector<vector<int>>& iadj, vector<vector<int>>
         }
     }
 }
-struct genes{
+struct genes{ //"all roads lead to darwinism"
     float dh_chl_contrib;
     float dh_par_contrib;
     float fast_adaptation_rate;
@@ -138,24 +139,30 @@ class lupus{
         float hunger;
         int curdir;
         bool alive;
-        lupus(const vector<vector<int>>& uadj, const vector<vector<int>>& uradj, const genes& rdna, const vector<bool>& uinput){
-            adj=uadj; radj=uradj; dna=rdna; input=uinput;
+        int lifetime;
+        float avg_life;
+        lupus(const genes& rdna, const vector<bool>& uinput){
+            adj.assign(n,vector<int>{}); radj.assign(n,vector<int>{}); dna=rdna; input=uinput;
             h.assign(n, vector<float>(d,0));
             dh.assign(n, vector<float>(d,0));
             e.assign(n, starting_energy);
             err.assign(n, vector<float>(d,0));
+            u.assign(n,0.0f);
             a.assign(n,vector<vector<float>>(d,vector<float>(r,0)));
             da.assign(n,vector<vector<float>>(d,vector<float>(r,0)));
             b.assign(n,vector<vector<float>>(d,vector<float>(r,0)));
             db.assign(n,vector<vector<float>>(d,vector<float>(r,0)));
         }
-        void reset(){
+        void reset(float p){
+            adj.assign(n,vector<int>{}); radj.assign(n,vector<int>{});
+            generate_smallworld(p, adj, radj);
             alive=true;
+            lifetime=0;
             for (int i=0;i<n;i++){
                 for (int j=0;j<d;j++){
                     for (int k=0;k<r;k++){
-                        a[i][j][k]=gaussian_noise(0.0f, 0.2f);
-                        b[i][j][k]=gaussian_noise(0.0f, 0.2f);
+                        a[i][j][k]=gaussian_noise(0.0f, 1.0f/sqrtf(r));
+                        b[i][j][k]=gaussian_noise(0.0f, 1.0f/sqrtf(r));
                     }
                 }
             }
@@ -225,6 +232,7 @@ class lupus{
             h=nh; err=nerr; a=na; b=nb; u=nu;
         }
         void step(){
+            lifetime++;
             float disx=foodx-curx;
             float disy=foody-cury;
             int disxi, disyi;
@@ -254,16 +262,113 @@ class lupus{
                 foodx=disf(rng)*bound;
                 foody=disf(rng)*bound;
             }
-            hunger-=0.01*dt;
+            hunger-=0.05*dt;
             hunger=max(0.0f,min(1.0f,hunger));
             if (hunger==0.0f) alive=false;
         }
+        void run_life(int lives, float p){
+            vector<float> lifetimes{};
+            for (int i=0;i<lives;i++){
+                cout<<"LIFE "<<i+1<<"\n";
+                reset(p);
+                while (alive){
+                    step();
+                }
+                lifetimes.push_back(lifetime);
+            }
+            avg_life=accumulate(lifetimes.begin(), lifetimes.end(), 0.0f)/lives;
+            cout<<"AVERAGE LIFESPAN: "<<avg_life<<"\n";
+        }
 };
-vector<vector<int>> un_adj(n,vector<int>{});
-vector<vector<int>> un_radj(n,vector<int>{});
-vector<float> un_input(n, false);
+vector<bool> un_input(n, false);
+genes crossover(genes dna1, genes dna2){
+    return genes{
+        (disf(rng)>0.5f)?dna1.dh_chl_contrib:dna2.dh_chl_contrib,
+        (disf(rng)>0.5f)?dna1.dh_par_contrib:dna2.dh_par_contrib,
+        (disf(rng)>0.5f)?dna1.fast_adaptation_rate:dna2.fast_adaptation_rate,
+        (disf(rng)>0.5f)?dna1.slow_adaptation_learning_rate_a:dna2.slow_adaptation_learning_rate_a,
+        (disf(rng)>0.5f)?dna1.slow_adaptation_learning_rate_b:dna2.slow_adaptation_learning_rate_b,
+        (disf(rng)>0.5f)?dna1.h_decay:dna2.h_decay,
+        (disf(rng)>0.5f)?dna1.e_decay:dna2.e_decay,
+        (disf(rng)>0.5f)?dna1.signal_income:dna2.signal_income,
+        (disf(rng)>0.5f)?dna1.cost_of_thought:dna2.cost_of_thought,
+        (disf(rng)>0.5f)?dna1.cost_of_complexity:dna2.cost_of_complexity,
+        (disf(rng)>0.5f)?dna1.curiosity:dna2.curiosity,
+        (disf(rng)>0.5f)?dna1.stability:dna2.stability,
+        (disf(rng)>0.5f)?dna1.surprise_tax:dna2.surprise_tax,
+        (disf(rng)>0.5f)?dna1.a_decay:dna2.a_decay,
+        (disf(rng)>0.5f)?dna1.b_decay:dna2.b_decay
+    };
+}
+genes mutate(genes dna1, float p, float mutation_rate){
+    dna1.dh_chl_contrib*=(disf(rng)<p)?exp(gaussian_noise(0.0f, mutation_rate)):1.0f;
+    dna1.dh_par_contrib*=(disf(rng)<p)?exp(gaussian_noise(0.0f, mutation_rate)):1.0f;
+    dna1.fast_adaptation_rate*=(disf(rng)<p)?exp(gaussian_noise(0.0f, mutation_rate)):1.0f;
+    dna1.slow_adaptation_learning_rate_a*=(disf(rng)<p)?exp(gaussian_noise(0.0f, mutation_rate)):1.0f;
+    dna1.slow_adaptation_learning_rate_b*=(disf(rng)<p)?exp(gaussian_noise(0.0f, mutation_rate)):1.0f;
+    dna1.h_decay*=(disf(rng)<p)?exp(gaussian_noise(0.0f, mutation_rate)):1.0f;
+    dna1.e_decay*=(disf(rng)<p)?exp(gaussian_noise(0.0f, mutation_rate)):1.0f;
+    dna1.signal_income*=(disf(rng)<p)?exp(gaussian_noise(0.0f, mutation_rate)):1.0f;
+    dna1.cost_of_thought*=(disf(rng)<p)?exp(gaussian_noise(0.0f, mutation_rate)):1.0f;
+    dna1.cost_of_complexity*=(disf(rng)<p)?exp(gaussian_noise(0.0f, mutation_rate)):1.0f;
+    dna1.curiosity*=(disf(rng)<p)?exp(gaussian_noise(0.0f, mutation_rate)):1.0f;
+    dna1.stability*=(disf(rng)<p)?exp(gaussian_noise(0.0f, mutation_rate)):1.0f;
+    dna1.surprise_tax*=(disf(rng)<p)?exp(gaussian_noise(0.0f, mutation_rate)):1.0f;
+    dna1.a_decay*=(disf(rng)<p)?exp(gaussian_noise(0.0f, mutation_rate)):1.0f;
+    dna1.b_decay*=(disf(rng)<p)?exp(gaussian_noise(0.0f, mutation_rate)):1.0f;
+    return dna1;
+}
+genes random_gene(float magnitude){
+    return genes{
+        disf(rng),
+        disf(rng),
+        disf(rng),
+        disf(rng),
+        disf(rng),
+        disf(rng),
+        disf(rng),
+        disf(rng),
+        disf(rng),
+        disf(rng),
+        disf(rng),
+        disf(rng),
+        disf(rng),
+        disf(rng),
+        disf(rng)
+    };
+}
+int population=1000;
+int survivors=50;
+int cross_cnt=745;
+int mutation_cnt=population-survivors-cross_cnt;
+int epochs=10;
+uniform_int_distribution<int> disi1(0,survivors-1);
+uniform_int_distribution<int> disi2(0,survivors-2);
 int main(){
-    generate_smallworld(0.1f, un_adj, un_radj);
     un_input[1]=true;
+    vector<lupus> pack{};
+    vector<lupus> new_pack{};
+    for (int i=0;i<population;i++){
+        pack.push_back(lupus(random_gene(1.0f), un_input));
+    }
+    for (int i=0;i<epochs;i++){
+        cout<<"EPOCH "<<i+1<<"\n";
+        new_pack.clear();
+        for (int i=0;i<population;i++) {cout<<"WOLF #"<<i+1<<"\n"; pack[i].run_life(5, 0.1f);}
+        sort(pack.begin(), pack.end(), [](lupus& l1, lupus& l2){return l1.avg_life>l2.avg_life;});
+        for (int j=0;j<survivors;j++) new_pack.push_back(pack[j]);
+        for (int j=0;j<cross_cnt;j++){
+            int idx1=disi1(rng);
+            int idx2=disi2(rng);
+            if (idx2>=idx1) idx2++;
+            lupus cand1=new_pack[idx1];
+            lupus cand2=new_pack[idx2];
+            new_pack.push_back(lupus(crossover(cand1.dna, cand2.dna), un_input));
+        }
+        for (int j=0;j<mutation_cnt;j++){
+            new_pack.push_back(lupus(mutate(new_pack[disi1(rng)].dna, 0.2f, 1.0f), un_input));
+        }
+        pack=new_pack;
+    }
     return 0;
 }
