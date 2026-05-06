@@ -332,9 +332,9 @@ genes random_gene(float magnitude){
         disf(rng)
     };
 }
-int population=1000;
-int survivors=50;
-int cross_cnt=745;
+int population=100;
+int survivors=5;
+int cross_cnt=75;
 int mutation_cnt=population-survivors-cross_cnt;
 int epochs=10;
 uniform_int_distribution<int> disi1(0,survivors-1);
