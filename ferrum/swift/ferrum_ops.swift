@@ -30,8 +30,8 @@ public func gemm(
             bytes(&b)
         ],
         grid: MTLSize(
-            width: ((Int(p)+31)/32),
-            height: ((Int(m)+31)/32)*Int(b),
+            width: ((Int(p)+63)/64),
+            height: ((Int(m)+63)/64)*Int(b),
             depth: 1
         ),
         threads: MTLSize(
@@ -48,12 +48,14 @@ public func gemv(
     _ C: GPUBuffer <Float>,
     _ m_: UInt32,
     _ n_: UInt32,
+    _ b_: UInt32
 ){
-    precondition(A.count==Int(m_*n_))
-    precondition(B.count==Int(n_))
-    precondition(C.count==Int(m_))
+    precondition(A.count==Int(b_*m_*n_))
+    precondition(B.count==Int(b_*n_))
+    precondition(C.count==Int(b_*m_))
     var m=m_
     var n=n_
+    var b=b_
     stream.dispatch(
         kernel: "gemv",
         args: [
@@ -61,11 +63,12 @@ public func gemv(
             .buffer(B.buffer),
             .buffer(C.buffer),
             bytes(&m),
-            bytes(&n)
+            bytes(&n),
+            bytes(&b)
         ],
         grid: MTLSize(
             width: ((Int(m)+255)/256),
-            height: 1,
+            height: b,
             depth: 1
         ),
         threads: MTLSize(
