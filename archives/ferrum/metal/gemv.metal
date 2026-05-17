@@ -1,6 +1,6 @@
 #include <metal_stdlib>
 using namespace metal;
-#define T 256
+#define T 32
 kernel void gemv(
     device const float* A[[buffer(0)]],
     device const float* B[[buffer(1)]],

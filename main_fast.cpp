@@ -1,5 +1,7 @@
 #include <bits/stdc++.h>
+#include <Accelerate/Accelerate.h>
 using namespace std;
+#define all(v) v.begin(), v.end()
 mt19937 rng(random_device{}());
 float gaussian_noise(float mean, float stddev){
     normal_distribution<float> dist(mean, stddev);
@@ -18,24 +20,11 @@ float speed=2.0f;
 float bound=500.0f;
 float within_dist=0.2f; //tolerance for differentiating direcion
 float phi=1.618033988749895;
-vector<float> matvec(const vector<float>& a, const vector<float>& b, int n, int m, int idx1, int idx2){
-    vector<float> c(n,0);
-    for (int i=0;i<n;i++){
-        for (int j=0;j<m;j++){
-            c[i]+=a[idx1*m*n+i*m+j]*b[idx2*m+j];
-        }
-    }
-    return c;
+void matvec(const vector<float>& a, const vector<float>& b, vector<float>& c, int n, int m, int idx1, int idx2){
+    cblas_sgemv(CblasRowMajor, CblasNoTrans, n, m, 1.0f, a.data()+(idx1*n*m), m, b.data()+(idx2*m), 1, 0.0f, c.data(), 1);
 }
-//note: no transposed matvec, because from previous experience gpu is better with the operations being separate
-vector<float> transpose(const vector<float>& a, int n, int m, int idx){
-    vector<float> a_t(m*n);
-    for (int i=0;i<m;i++){
-        for (int j=0;j<n;j++){
-            a_t[i*n+j]=a[idx*n*m+j*m+i];
-        }
-    }
-    return a_t;
+void matvec_transpose(const vector<float>& a, const vector<float>& b, vector<float>& c, int n, int m, int idx1, int idx2){
+    cblas_sgemv(CblasRowMajor, CblasTrans, n, m, 1.0f, a.data()+(idx1*n*m), m, b.data()+(idx2*m), 1, 0.0f, c.data(), 1);
 }
 vector<float> outer_prod(const vector<float>& a, const vector<float>& b){
     int n=a.size();
@@ -49,9 +38,7 @@ vector<float> outer_prod(const vector<float>& a, const vector<float>& b){
     return c;
 }
 float mag(const vector<float>&a, int start_idx, int size){
-    float ret=0;
-    for (int i=start_idx;i<start_idx+size;i++) ret+=a[i]*a[i];
-    return ret/size;
+    return cblas_sdot(size, a.data()+start_idx, 1, a.data()+start_idx, 1)/size;
 }
 void delta_rule(vector<float> &a, const vector<float>&x, const vector<float>&err, float lr, vector<float>& da, float a_dec, int n, int m, int idx){
     for (int i=0;i<n;i++){
@@ -122,6 +109,14 @@ class lupus{
         vector<float> da;
         vector<float> b; //emitters
         vector<float> db;
+        //scratch
+        vector<float> par_signal;
+        vector<float> emitted_signal_par;
+        vector<float> received_signal_par;
+        vector<float> nu, nh, nerr, na, nb;
+        vector<float> emitted_signal_chl;
+        vector<float> chl_signal;
+        vector<float> received_signal_chl;
         genes dna;
         float curx;
         float cury;
@@ -143,6 +138,12 @@ class lupus{
             da.assign(n*d*r, 0);
             b.assign(n*d*r, 0);
             db.assign(n*d*r, 0);
+            par_signal.assign(r,0);
+            emitted_signal_par.assign(r,0);
+            received_signal_par.assign(d,0);
+            chl_signal.assign(r,0);
+            emitted_signal_chl.assign(r,0);
+            received_signal_chl.assign(d,0);
         }
         void reset(float p){
             adj.assign(n,vector<int>{}); radj.assign(n,vector<int>{});
@@ -164,21 +165,21 @@ class lupus{
             hunger=1.0f;
         }
         void update(){
-            vector<float> nu=u;
-            vector<float> nh=h;
-            vector<float> nerr=err;
-            vector<float> na=a;
-            vector<float> nb=b;
+            nu=u;
+            nh=h;
+            nerr=err;
+            na=a;
+            nb=b;
             for (int i=0;i<n;i++){
                 //step 1: aggregate belief from parents
-                vector<float> emitted_signal_par(r,0);
+                fill(all(emitted_signal_par), 0.0f);
                 for (auto par:radj[i]){
-                    vector<float> par_signal=matvec(transpose(b, d, r, par), h, r, d, 0, par);
+                    matvec_transpose(b, h, par_signal, d, r, par, par);
                     for (int j=0;j<r;j++){
                         emitted_signal_par[j]+=1.0f/(1.0f+u[par])*par_signal[j];
                     }
                 }
-                vector<float> received_signal_par=matvec(a, emitted_signal_par, d, r, i, 0);
+                matvec(a, emitted_signal_par, received_signal_par ,d, r, i, 0);
                 float surprise=0.0f; //surprise=squared sum of error
                 for (int j=0;j<d;j++){
                     if (radj[i].size()>0) received_signal_par[j]/=radj[i].size();
@@ -191,14 +192,14 @@ class lupus{
                 }
                 nu[i]+=dt*((surprise/d)-u[i]); //uncertainty is a moving average of surprise
                 //step 2: aggregate error from children
-                vector<float> emitted_signal_chl(r,0);
+                fill(all(emitted_signal_chl), 0.0f);
                 for (auto chl:adj[i]){
-                    vector<float> chl_signal=matvec(transpose(a, d, r, chl), err, r, d, 0, chl);
+                    matvec_transpose(a, err, chl_signal, d, r, chl, chl);
                     for (int j=0;j<r;j++){
                         emitted_signal_chl[j]+=1.0f/(1.0f+u[chl])*chl_signal[j];
                     }
                 }
-                vector<float> received_signal_chl=matvec(b, emitted_signal_chl, d, r, i, 0);
+                matvec(b, emitted_signal_chl, received_signal_chl, d, r, i, 0);
                 for (int j=0;j<d;j++){
                     if (adj[i].size()>0) received_signal_chl[j]/=adj[i].size();
                 }
@@ -271,7 +272,7 @@ class lupus{
                 }
                 lifetimes.push_back(lifetime);
             }
-            avg_life=accumulate(lifetimes.begin(), lifetimes.end(), 0.0f)/lives;
+            avg_life=accumulate(all(lifetimes), 0.0f)/lives;
             cout<<"AVERAGE LIFESPAN: "<<avg_life<<"\n";
         }
 };
@@ -350,7 +351,7 @@ int main(){
         cout<<"EPOCH "<<i+1<<"\n";
         new_pack.clear();
         for (int i=0;i<population;i++) {cout<<"WOLF #"<<i+1<<"\n"; pack[i].run_life(5, 0.1f);}
-        sort(pack.begin(), pack.end(), [](lupus& l1, lupus& l2){return l1.avg_life>l2.avg_life;});
+        sort(all(pack), [](lupus& l1, lupus& l2){return l1.avg_life>l2.avg_life;});
         for (int j=0;j<survivors;j++) new_pack.push_back(pack[j]);
         for (int j=0;j<cross_cnt;j++){
             int idx1=disi1(rng);

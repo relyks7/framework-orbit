@@ -67,12 +67,12 @@ public func gemv(
             bytes(&b)
         ],
         grid: MTLSize(
-            width: ((Int(m)+255)/256),
+            width: ((Int(m)+31)/32),
             height: b,
             depth: 1
         ),
         threads: MTLSize(
-            width: 256,
+            width: 32,
             height: 1,
             depth: 1
         )
