@@ -1,13 +1,21 @@
-#include <bits/stdc++.h>
+#include <iostream>
+#include <vector>
+#include <algorithm>
+#include <numeric>
+#include <cmath>
+#include <random>
+#include <thread>
 #include <Accelerate/Accelerate.h>
 using namespace std;
 #define all(v) v.begin(), v.end()
-mt19937 rng(random_device{}());
+using ll=long long;
+int INF=0x3f3f3f3f;
+thread_local mt19937 rng(hash<thread::id>{}(this_thread::get_id())^random_device{}());
 float gaussian_noise(float mean, float stddev){
     normal_distribution<float> dist(mean, stddev);
     return dist(rng);
 }
-uniform_real_distribution<float> disf(0.0f, 1.0f);
+thread_local uniform_real_distribution<float> disf(0.0f, 1.0f);
 float dt=0.01f;
 int n=100;
 int d=16;
@@ -15,27 +23,19 @@ int r=64;
 int deg=16;
 float starting_energy=0.5f;
 float delta_clamp=1.0f;
-float fr=0.1f; //food radius
-float speed=2.0f;
-float bound=500.0f;
+float fr=40.0f; //food radius
+float speed=8.0f;
+float bound=200.0f;
+float hunger_drain=0.01f;
+float start_dist=30.0f;
 float within_dist=0.2f; //tolerance for differentiating direcion
 float phi=1.618033988749895;
+float tanh_mag=100.0f;
 void matvec(const vector<float>& a, const vector<float>& b, vector<float>& c, int n, int m, int idx1, int idx2){
     cblas_sgemv(CblasRowMajor, CblasNoTrans, n, m, 1.0f, a.data()+(idx1*n*m), m, b.data()+(idx2*m), 1, 0.0f, c.data(), 1);
 }
 void matvec_transpose(const vector<float>& a, const vector<float>& b, vector<float>& c, int n, int m, int idx1, int idx2){
-    cblas_sgemv(CblasRowMajor, CblasTrans, n, m, 1.0f, a.data()+(idx1*n*m), m, b.data()+(idx2*m), 1, 0.0f, c.data(), 1);
-}
-vector<float> outer_prod(const vector<float>& a, const vector<float>& b){
-    int n=a.size();
-    int m=b.size();
-    vector<float> c(n*m);
-    for (int i=0;i<n;i++){
-        for (int j=0;j<m;j++){
-            c[i*m+j]=a[i]*b[j];
-        }
-    }
-    return c;
+    cblas_sgemv(CblasRowMajor, CblasTrans, n, m, 1.0f, a.data()+(idx1*n*m), m, b.data()+(idx2*n), 1, 0.0f, c.data(), 1);
 }
 float mag(const vector<float>&a, int start_idx, int size){
     return cblas_sdot(size, a.data()+start_idx, 1, a.data()+start_idx, 1)/size;
@@ -44,7 +44,7 @@ void delta_rule(vector<float> &a, const vector<float>&x, const vector<float>&err
     for (int i=0;i<n;i++){
         for (int j=0;j<m;j++){
             da[idx*m*n+i*m+j]=max(-delta_clamp, min(delta_clamp, -lr*dt*err[idx*n+i]*x[j]));
-            a[idx*m*n+i*m+j]+=-dt*a_dec*a[idx*m*n+i*m+j]-da[idx*m*n+i*m+j];
+            a[idx*m*n+i*m+j]+=-dt*a_dec*a[idx*m*n+i*m+j]+da[idx*m*n+i*m+j];
         }
     }
 }
@@ -113,7 +113,8 @@ class lupus{
         vector<float> par_signal;
         vector<float> emitted_signal_par;
         vector<float> received_signal_par;
-        vector<float> nu, nh, nerr, na, nb;
+        vector<float> nu, nh, nerr;
+        vector<float> err_diff;
         vector<float> emitted_signal_chl;
         vector<float> chl_signal;
         vector<float> received_signal_chl;
@@ -125,14 +126,15 @@ class lupus{
         float hunger;
         int curdir;
         bool alive;
-        int lifetime;
-        float avg_life;
+        ll lifetime;
+        double avg_life;
         lupus(const genes& rdna, const vector<bool>& uinput){
             adj.assign(n,vector<int>{}); radj.assign(n,vector<int>{}); dna=rdna; input=uinput;
             h.assign(n*d, 0);
             dh.assign(n*d, 0);
             e.assign(n, starting_energy);
             err.assign(n*d, 0);
+            err_diff.assign(d,0);
             u.assign(n,0.0f);
             a.assign(n*d*r, 0);
             da.assign(n*d*r, 0);
@@ -146,6 +148,13 @@ class lupus{
             received_signal_chl.assign(d,0);
         }
         void reset(float p){
+            fill(all(h), 0.0f);
+            fill(all(dh), 0.0f);
+            fill(all(err), 0.0f);
+            fill(all(u), 0.0f);
+            fill(all(da), 0.0f);
+            fill(all(db), 0.0f);
+            fill(all(e), starting_energy);
             adj.assign(n,vector<int>{}); radj.assign(n,vector<int>{});
             generate_smallworld(p, adj, radj);
             alive=true;
@@ -158,25 +167,23 @@ class lupus{
                     }
                 }
             }
-            curx=bound/4;
-            cury=bound/4;
             foodx=bound/2;
             foody=bound/2;
+            curx=max(0.0f, min(bound,foodx+gaussian_noise(0.0f, start_dist)));
+            cury=max(0.0f, min(bound,foody+gaussian_noise(0.0f, start_dist)));
             hunger=1.0f;
         }
-        void update(){
+        void forward(){
             nu=u;
             nh=h;
             nerr=err;
-            na=a;
-            nb=b;
             for (int i=0;i<n;i++){
                 //step 1: aggregate belief from parents
                 fill(all(emitted_signal_par), 0.0f);
                 for (auto par:radj[i]){
                     matvec_transpose(b, h, par_signal, d, r, par, par);
                     for (int j=0;j<r;j++){
-                        emitted_signal_par[j]+=1.0f/(1.0f+u[par])*par_signal[j];
+                        emitted_signal_par[j]+=tanh_mag*tanhf((1.0f/(1.0f+u[par])*par_signal[j])/tanh_mag);
                     }
                 }
                 matvec(a, emitted_signal_par, received_signal_par ,d, r, i, 0);
@@ -196,7 +203,7 @@ class lupus{
                 for (auto chl:adj[i]){
                     matvec_transpose(a, err, chl_signal, d, r, chl, chl);
                     for (int j=0;j<r;j++){
-                        emitted_signal_chl[j]+=1.0f/(1.0f+u[chl])*chl_signal[j];
+                        emitted_signal_chl[j]+=tanh_mag*tanhf((1.0f/(1.0f+u[chl])*chl_signal[j])/tanh_mag);
                     }
                 }
                 matvec(b, emitted_signal_chl, received_signal_chl, d, r, i, 0);
@@ -212,20 +219,24 @@ class lupus{
                     dh[i*d+j]=dt*(fast_adapt-dna.h_decay*h[i*d+j]+energy_noise);
                     nh[i*d+j]+=dh[i*d+j];
                 }
+                for (int j=0;j<d;j++){
+                    err_diff[j]=received_signal_chl[j]-nerr[i*d+j];
+                }
                 //move a
-                delta_rule(na, emitted_signal_par, nerr, dna.slow_adaptation_learning_rate_a/(e[i]+0.5), da, dna.a_decay, d, r, i);
+                delta_rule(a, emitted_signal_par, nerr, dna.slow_adaptation_learning_rate_a/(e[i]+0.5), da, dna.a_decay, d, r, i);
                 //move b (hypothesis here - align the errors, invert A=sort of "unify/harmonize" the whole network)
-                delta_rule(nb, emitted_signal_chl, nerr, dna.slow_adaptation_learning_rate_b/(e[i]+0.5), db, dna.b_decay, d, r, i);
+                delta_rule(b, emitted_signal_chl, err_diff, dna.slow_adaptation_learning_rate_b/(e[i]+0.5), db, dna.b_decay, d, r, i);
                 //update energy
-                e[i]+=dt*(1.0/(1.0f+u[i])*(dna.curiosity*dna.signal_income*sig_mag-dna.stability*dna.surprise_tax*surprise)-dna.cost_of_thought*mag(dh, i*d, d)-dna.cost_of_complexity*mag(da, i*d*r, d*r)-dna.e_decay*e[i]);
+                e[i]+=dt*(1.0/(1.0f+u[i])*(dna.curiosity*dna.signal_income*logf(sig_mag)-dna.stability*dna.surprise_tax*surprise)-dna.cost_of_thought*mag(dh, i*d, d)-dna.cost_of_complexity*(mag(a, i*d*r, d*r)+mag(b, i*d*r, d*r))-dna.e_decay*e[i]);
                 e[i]=max(0.0f, e[i]);
                 nu[i]=min(nu[i],10.0f);
             }
             swap(h, nh);
             swap(err, nerr);
-            swap(a, na);
-            swap(b, nb);
             swap(u, nu);
+        }
+        void update(int k){
+            for (int i=0;i<k;i++) forward();
         }
         void step(){
             lifetime++;
@@ -238,7 +249,7 @@ class lupus{
             if (disy<-within_dist) disyi=0;
             else if (disy>within_dist) disyi=2;
             else disyi=1;
-            curdir=disxi*3+disyi+1;
+            curdir=disxi*3+disyi;
             for (int i=0;i<16;i++){
                 if (i==curdir){
                     dh[1*d+i]=1.0f-h[1*d+i];
@@ -248,7 +259,7 @@ class lupus{
                     h[1*d+i]=0.0f;
                 }
             }
-            update();
+            update(50);
             curx+=dt*speed*tanhf(h[2*d+0]);
             cury+=dt*speed*tanhf(h[2*d+1]);
             curx=max(0.0f,min(bound,curx));
@@ -258,22 +269,22 @@ class lupus{
                 foodx=disf(rng)*bound;
                 foody=disf(rng)*bound;
             }
-            hunger-=0.05*dt;
+            hunger-=hunger_drain*dt;
             hunger=max(0.0f,min(1.0f,hunger));
             if (hunger==0.0f) alive=false;
         }
         void run_life(int lives, float p){
-            vector<float> lifetimes{};
+            vector<double> lifetimes{};
             for (int i=0;i<lives;i++){
-                cout<<"LIFE "<<i+1<<"\n";
+                //cout<<"LIFE "<<i+1<<"\n";
                 reset(p);
                 while (alive){
                     step();
                 }
-                lifetimes.push_back(lifetime);
+                lifetimes.push_back(static_cast<double>(lifetime));
             }
-            avg_life=accumulate(all(lifetimes), 0.0f)/lives;
-            cout<<"AVERAGE LIFESPAN: "<<avg_life<<"\n";
+            avg_life=accumulate(all(lifetimes), 0.0)/lives;
+            //cout<<"AVERAGE LIFESPAN: "<<avg_life<<"\n";
         }
 };
 vector<bool> un_input(n, false);
@@ -316,30 +327,33 @@ genes mutate(genes dna1, float p, float mutation_rate){
 }
 genes random_gene(float magnitude){
     return genes{
-        disf(rng),
-        disf(rng),
-        disf(rng),
-        disf(rng),
-        disf(rng),
-        disf(rng),
-        disf(rng),
-        disf(rng),
-        disf(rng),
-        disf(rng),
-        disf(rng),
-        disf(rng),
-        disf(rng),
-        disf(rng),
-        disf(rng)
+        disf(rng)*magnitude,
+        disf(rng)*magnitude,
+        disf(rng)*magnitude,
+        disf(rng)*magnitude,
+        disf(rng)*magnitude,
+        disf(rng)*magnitude,
+        disf(rng)*magnitude,
+        disf(rng)*magnitude,
+        disf(rng)*magnitude,
+        disf(rng)*magnitude,
+        disf(rng)*magnitude,
+        disf(rng)*magnitude,
+        disf(rng)*magnitude,
+        disf(rng)*magnitude,
+        disf(rng)*magnitude
     };
 }
-int population=100;
-int survivors=5;
-int cross_cnt=75;
+int population=200;
+int survivors=10;
+int cross_cnt=150;
 int mutation_cnt=population-survivors-cross_cnt;
-int epochs=10;
-uniform_int_distribution<int> disi1(0,survivors-1);
-uniform_int_distribution<int> disi2(0,survivors-2);
+int epochs=100;
+double avg_survival;
+double best_survival;
+double worst_survival;
+thread_local uniform_int_distribution<int> disi1(0,survivors-1);
+thread_local uniform_int_distribution<int> disi2(0,survivors-2);
 int main(){
     un_input[1]=true;
     vector<lupus> pack{};
@@ -348,18 +362,29 @@ int main(){
         pack.push_back(lupus(random_gene(1.0f), un_input));
     }
     for (int i=0;i<epochs;i++){
+        avg_survival=0.0f;
+        if (i<60){
+            start_dist=10.0f+i*3.0f;
+            fr=40.0f;
+        } else{
+            start_dist=180.0f;
+            fr=max(12.0f, 40.0f*powf(0.96f, i-60));
+        }
         cout<<"EPOCH "<<i+1<<"\n";
         new_pack.clear();
-        for (int i=0;i<population;i++) {cout<<"WOLF #"<<i+1<<"\n"; pack[i].run_life(5, 0.1f);}
-        sort(all(pack), [](lupus& l1, lupus& l2){return l1.avg_life>l2.avg_life;});
+        #pragma omp parallel for reduction(+:avg_survival)
+        for (int j=0;j<population;j++) {pack[j].run_life(5, 0.1f); avg_survival+=pack[j].avg_life/population;}
+        //cout<<"WOLF #"<<j+1<<"\n";
+        sort(all(pack), [](const lupus& l1, const lupus& l2){return l1.avg_life>l2.avg_life;});
+        best_survival=pack[0].avg_life;
+        worst_survival=pack[population-1].avg_life;
+        cout<<"EPOCH END\n"<<"Best survival: "<<best_survival<<"\nWorst survival: "<<worst_survival<<"\nAverage survival: "<<avg_survival<<'\n';
         for (int j=0;j<survivors;j++) new_pack.push_back(pack[j]);
         for (int j=0;j<cross_cnt;j++){
             int idx1=disi1(rng);
             int idx2=disi2(rng);
             if (idx2>=idx1) idx2++;
-            lupus cand1=new_pack[idx1];
-            lupus cand2=new_pack[idx2];
-            new_pack.push_back(lupus(crossover(cand1.dna, cand2.dna), un_input));
+            new_pack.push_back(lupus(crossover(new_pack[idx1].dna, new_pack[idx2].dna), un_input));
         }
         for (int j=0;j<mutation_cnt;j++){
             new_pack.push_back(lupus(mutate(new_pack[disi1(rng)].dna, 0.2f, 1.0f), un_input));
@@ -368,3 +393,6 @@ int main(){
     }
     return 0;
 }
+/*
+clang++ -std=c++23 -O3 -Wall -Xpreprocessor -fopenmp -I/opt/homebrew/opt/libomp/include -L/opt/homebrew/opt/libomp/lib -lomp -DACCELERATE_NEW_LAPACK main_fast.cpp -framework Accelerate -o main_fast && VECLIB_MAXIMUM_THREADS=1 OMP_NUM_THREADS=8 ./main_fast
+*/
