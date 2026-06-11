@@ -340,19 +340,21 @@ void update_data(float &x, float &y, float &z, int i, string tp) {
     }
 }
 vector<int> input_nodes{0, 10, 20, 30, 40, 50, 60, 70, 80, 90};
+float curp=0.2f;
 int main(){
     for (auto xx:input_nodes){
         un_input[xx]=true;
     }
+    cout<<"smallworld p: "<<curp<<endl;
     for (auto curtp:vector<string>{"lorenz", "sin", "brownian", "rossler", "fourier", "o-u"}){
         cout<<"RUNNING EXPERIMENT "<<curtp<<endl;
-        for (int num=1;num<=5;num++){
+        for (int num=1;num<=2;num++){
             float curx=0.05f, cury=0.1f, curz=-0.025f;
             trait iE{0.9f, 0.5f, 0.4f, 0.9f, 0.0f, 0.05f, 0.05f, 0.4f};
             trait iV{0.9f, 0.65f, 0.6f, 0.85f, 0.0f, 0.05f, 0.1f, 0.6f};
             trait iS{0.1f, 0.3f, 0.2f, 0.95f, 0.0f, 0.05f, 0.03f, 0.2f};
             lupus sextus(genes(), iE, iV, iS, un_input);
-            sextus.reset(0.1f);
+            sextus.reset(curp);
             for (int i=0;i<100000;i++){
                 //cout<<"STEP NUMBER: "<<i+1<<endl;
                 update_data(curx, cury, curz, i, curtp);
