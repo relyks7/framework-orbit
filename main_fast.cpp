@@ -340,7 +340,7 @@ void update_data(float &x, float &y, float &z, int i, string tp) {
     }
 }
 vector<int> input_nodes{0, 10, 20, 30, 40, 50, 60, 70, 80, 90};
-float curp=0.2f;
+float curp=1.0f;
 int main(){
     for (auto xx:input_nodes){
         un_input[xx]=true;
@@ -363,6 +363,9 @@ int main(){
                     sextus.h[xx*d+0]=curx/5.0f;
                     sextus.h[xx*d+1]=cury/5.0f;
                     sextus.h[xx*d+2]=curz/5.0f;
+                }
+                if (i%200==0){
+                    cout<<"TICK "<<i<<", AVERAGE U: "<<accumulate(all(sextus.u), 0.0f)/n<<endl;
                 }
                 sextus.step();
                 //cout<<"NODES EVS:"<<endl;
