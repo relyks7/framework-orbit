@@ -28,7 +28,7 @@ float speed=8.0f;
 float bound=200.0f;
 float hunger_drain=0.01f;
 float start_dist=30.0f;
-float within_dist=0.2f; //tolerance for differentiating direcion
+float within_dist=0.2f; //tolerance for differentiating direction
 float phi=1.618033988749895;
 float tanh_mag=100.0f;
 void matvec(const vector<float>& a, const vector<float>& b, vector<float>& c, int n, int m, int idx1, int idx2){

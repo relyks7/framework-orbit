@@ -6,6 +6,7 @@
 #include <random>
 #include <thread>
 #include <iomanip>
+#include <unordered_set>
 #include <Accelerate/Accelerate.h>
 using namespace std;
 #define all(v) v.begin(), v.end()
@@ -18,22 +19,17 @@ float gaussian_noise(float mean, float stddev){
 }
 thread_local uniform_real_distribution<float> disf(0.0f, 1.0f);
 float dt=0.01f;
-int n=100;
-int d=4;
-int r=32;
-int deg=8;
-float starting_energy=20.0f;
-float delta_clamp=1.0f;
-float fr=40.0f; //food radius
-float speed=8.0f;
-float bound=200.0f;
-float hunger_drain=0.01f;
-float start_dist=30.0f;
-float within_dist=0.2f; //tolerance for differentiating direcion
+float starting_energy=500.0f;
+float delta_clamp=0.25f;
 float phi=1.618033988749895;
 float tanh_mag=10.0f;
+float mitosis_threshold=10.0f; //tau
+float mitosis_energy=120.0f; //energy threshold for mitosis: don't mitose if doing so will kill you
 void matvec(const vector<float>& a, const vector<float>& b, vector<float>& c, int n, int m, int idx1, int idx2){
     cblas_sgemv(CblasRowMajor, CblasNoTrans, n, m, 1.0f, a.data()+(idx1*n*m), m, b.data()+(idx2*m), 1, 0.0f, c.data(), 1);
+}
+void matmat(const vector<float>& a, const vector<float>& b, vector<float>& c, int n, int m, int p, int idx1, int idx2){
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, n, p, m, 1.0f, a.data()+(idx1*n*m), m, b.data()+(idx2*m*p), p, 0.0f, c.data(), p);
 }
 void matvec_transpose(const vector<float>& a, const vector<float>& b, vector<float>& c, int n, int m, int idx1, int idx2){
     cblas_sgemv(CblasRowMajor, CblasTrans, n, m, 1.0f, a.data()+(idx1*n*m), m, b.data()+(idx2*n), 1, 0.0f, c.data(), 1);
@@ -49,21 +45,6 @@ void delta_rule(vector<float> &a, const vector<float>&x, const vector<float>&err
         }
     }
 }
-void generate_smallworld(float p, vector<vector<int>>& iadj, vector<vector<int>>& iradj){
-    uniform_int_distribution<int> disi(0,n-2);
-    for (int i=0;i<n;i++){
-        for (int j=-(deg/2);j<=(deg/2);j++){
-            if (j==0) continue;
-            if (disf(rng)>p){
-                iadj[i].push_back((i+j+n)%n); iradj[(i+j+n)%n].push_back(i);
-            } else{
-                int dart=disi(rng);
-                if (dart>=i) dart++;
-                iadj[i].push_back(dart); iradj[dart].push_back(i);
-            }
-        }
-    }
-}
 struct genes{ //"all roads lead to darwinism"
     float dh_chl_contrib;
     float dh_par_contrib;
@@ -74,12 +55,16 @@ struct genes{ //"all roads lead to darwinism"
     float e_decay;
     float signal_income;
     float cost_of_thought;
+    float cost_of_plasticity;
     float cost_of_complexity;
     float curiosity;
     float stability;
     float surprise_tax; //"surprise tax" would be a terrible phrase in any other context
     float a_decay;
     float b_decay;
+    float stress_decay;
+    float raw_signal_par;
+    float raw_signal_chl;
 };
 // float dh_chl_contrib=1.0f;
 // float dh_par_contrib=0.6f;
@@ -107,7 +92,7 @@ class trait{ //preferably, decay=plasticity
         float plasticity;
         void step(float feeder_val){
             target_val=target_val+dt*(plasticity*feeder_val-decay*target_val+gaussian_noise(0.0f, noise));
-            target_val=max(0.1f,min(0.9f,target_val));
+            target_val=max(0.05f,min(0.95f,target_val));
             voltage+=dt*(abs(feeder_val)-voltage*(1-v_decay));
             if (voltage>capacity){
                 voltage=0.0f;
@@ -118,24 +103,27 @@ class trait{ //preferably, decay=plasticity
 class lupus{
     //0 is prior, 1 is eyes, 2 is motor
     public:
-        vector<vector<int>> adj; //initialize with smallworld graph
+        vector<unordered_set<int>> adj; //initialize with smallworld graph
         vector<bool> input;
-        vector<vector<int>> radj;
+        vector<unordered_set<int>> radj;
         vector<float> h; //internal state
         vector<float> dh;
         vector<float> e; //energy, initially high
         vector<float> err; //error
+        vector<float> err_diff;
+        vector<float> err_cov; //error covariance matrix
         vector<float> u; //uncertainty
         vector<float> a; //receptors
         vector<float> da;
         vector<float> b; //emitters
         vector<float> db;
+        vector<float> stress;
+        float sig_mag;
         //scratch
         vector<float> par_signal;
         vector<float> emitted_signal_par;
         vector<float> received_signal_par;
-        vector<float> nu, nh, nerr;
-        vector<float> err_diff;
+        vector<float> nu, nh, nerr, nerr_diff;
         vector<float> emitted_signal_chl;
         vector<float> chl_signal;
         vector<float> received_signal_chl;
@@ -143,38 +131,304 @@ class lupus{
         vector<trait> E;
         vector<trait> V;
         vector<trait> S;
-        lupus(const genes& rdna, const trait& initE, const trait& initV, const trait& initS, const vector<bool>& uinput){
-            adj.assign(n,vector<int>{}); radj.assign(n,vector<int>{}); dna.assign(n,rdna); input=uinput;
-            h.assign(n*d, 0);
-            dh.assign(n*d, 0);
+        trait iE;
+        trait iV;
+        trait iS;
+        int ticks=0;
+        int cticks;
+        int n=2;
+        int d=4;
+        int r=32;
+        lupus(const trait& initE, const trait& initV, const trait& initS, const vector<bool>& uinput, int icticks){
+            adj.assign(n,unordered_set<int>{}); radj.assign(n,unordered_set<int>{}); dna.assign(n,genes()); input=uinput;
+            h.assign(n*d, 0.0f);
+            dh.assign(n*d, 0.0f);
             e.assign(n, starting_energy);
-            err.assign(n*d, 0);
-            err_diff.assign(n*d,0);
-            u.assign(n,0.0f);
-            a.assign(n*d*r, 0);
-            da.assign(n*d*r, 0);
-            b.assign(n*d*r, 0);
-            db.assign(n*d*r, 0);
-            par_signal.assign(r,0);
-            emitted_signal_par.assign(r,0);
-            received_signal_par.assign(d,0);
-            chl_signal.assign(r,0);
-            emitted_signal_chl.assign(r,0);
-            received_signal_chl.assign(d,0);
-            E.assign(n,initE);
-            V.assign(n,initV);
-            S.assign(n,initS);
+            err.assign(n*d, 0.0f);
+            err_cov.assign(n*d*d, 0.0f);
+            err_diff.assign(n*d, 0.0f);
+            u.assign(n, 0.0f);
+            a.assign(n*d*r, 0.0f);
+            da.assign(n*d*r, 0.0f);
+            b.assign(n*d*r, 0.0f);
+            db.assign(n*d*r, 0.0f);
+            stress.assign(n, 0.0f);
+            par_signal.assign(r, 0.0f);
+            emitted_signal_par.assign(r, 0.0f);
+            received_signal_par.assign(d, 0.0f);
+            chl_signal.assign(r, 0.0f);
+            emitted_signal_chl.assign(r, 0.0f);
+            received_signal_chl.assign(d, 0.0f);
+            cticks=icticks;
+            E.assign(n, initE);
+            V.assign(n, initV);
+            S.assign(n, initS);
+            iE=initE;
+            iV=initV;
+            iS=initS;
         }
-        void reset(float p){
-            fill(all(h), 0.0f);
-            fill(all(dh), 0.0f);
-            fill(all(err), 0.0f);
-            fill(all(u), 0.0f);
-            fill(all(da), 0.0f);
-            fill(all(db), 0.0f);
-            fill(all(e), starting_energy);
-            adj.assign(n,vector<int>{}); radj.assign(n,vector<int>{});
-            generate_smallworld(p, adj, radj);
+        void cleanup(){ //apoptosis, run every k ticks
+            vector<bool> alive(n,true);
+            vector<int> new_index(n,-1);
+            int cnt=0;
+            for (int i=0;i<n;i++){
+                if (e[i]<=0.0f){
+                    alive[i]=false; 
+                    cout<<"NODE "<<i<<" DEAD IN CLEANUP"<<endl;
+                    continue;
+                }
+                new_index[i]=cnt++;
+            }
+            nh.clear();
+            vector<float> ndh{};
+            vector<float> ne{};
+            nerr.clear();
+            nerr_diff.clear();
+            nu.clear();
+            vector<float> na{};
+            vector<float> nda{};
+            vector<float> nb{};
+            vector<float> ndb{};
+            vector<float> nstress{};
+            vector<genes> ndna{};
+            vector<float> nerr_cov{};
+            vector<trait> nE;
+            vector<trait> nV;
+            vector<trait> nS;
+            vector<bool> ninput;
+            for (int i=0;i<n;i++){
+                if (alive[i]){
+                    ninput.push_back(input[i]);
+                    nE.push_back(E[i]);
+                    nV.push_back(V[i]);
+                    nS.push_back(S[i]);
+                    ne.push_back(e[i]);
+                    nu.push_back(u[i]);
+                    nstress.push_back(stress[i]);
+                    ndna.push_back(dna[i]);
+                    for (int j=0;j<d;j++){
+                        nh.push_back(h[i*d+j]);
+                        ndh.push_back(dh[i*d+j]);
+                        nerr.push_back(err[i*d+j]);
+                        nerr_diff.push_back(err_diff[i*d+j]);
+                    }
+                    for (int j=0;j<d*r;j++){
+                        na.push_back(a[i*d*r+j]);
+                        nda.push_back(da[i*d*r+j]);
+                        nb.push_back(b[i*d*r+j]);
+                        ndb.push_back(db[i*d*r+j]);
+                    }
+                    for (int j=0;j<d*d;j++){
+                        nerr_cov.push_back(err_cov[i*d*d+j]);
+                    }
+                }
+            }
+            swap(h, nh);
+            swap(dh, ndh);
+            swap(e, ne);
+            swap(err, nerr);
+            swap(err_diff, nerr_diff);
+            swap(u, nu);
+            swap(a, na);
+            swap(da, nda);
+            swap(b, nb);
+            swap(db, ndb);
+            swap(stress, nstress);
+            swap(dna, ndna);
+            swap(err_cov, nerr_cov);
+            swap(E, nE);
+            swap(V, nV);
+            swap(S, nS);
+            swap(input, ninput);
+            vector<unordered_set<int>> nadj{};
+            vector<unordered_set<int>> nradj{};
+            for (int i=0;i<n;i++){
+                if (!alive[i]) continue;
+                nadj.push_back(unordered_set<int>{});
+                nradj.push_back(unordered_set<int>{});
+                for (auto chl:adj[i]){
+                    if (alive[chl]) nadj[new_index[i]].insert(new_index[chl]);
+                }
+                for (auto par:radj[i]){
+                    if (alive[par]) nradj[new_index[i]].insert(new_index[par]);
+                }
+            }
+            swap(adj, nadj);
+            swap(radj, nradj);
+            n=cnt;
+        }
+        void mitosis (int i){ //no, kris did not mitose
+            vector<float> cov(d*d);
+            for (int j=0;j<d*d;j++) cov[j]=err_cov[i*d*d+j];
+            vector<float> eigenvals(d,0.0f);
+            int lwork=3*d-1;
+            vector<float> work(lwork, 0.0f);
+            int info=0;
+            char jobz='V'; //eigenval and eigenvec
+            char uplo='U'; //upper triangle (cov is symmetric)
+            ssyev_(&jobz, &uplo, &d, cov.data(), &d, eigenvals.data(), work.data(), &lwork, &info);
+            if (info!=0){
+                cout<<"eigendecomposition error, code: "<<info<<endl;
+                cout<<"error: "<<((info>0)?"did not converge":"illegal parameter")<<endl;
+                return;
+            }
+            vector<float> eigenvec{};
+            for (int j=0;j<d;j++){
+                eigenvec.push_back(cov[d*(d-1)+j]);
+            }
+            vector<float> c1_h(d, 0.0f);
+            vector<float> c2_h(d, 0.0f);
+            vector<float> c1_a(d*r, 0.0f);
+            vector<float> c2_a(d*r, 0.0f);
+            vector<float> c1_b(d*r, 0.0f);
+            vector<float> c2_b(d*r, 0.0f);
+            float temp=0.0f;
+            for (int j=0;j<d;j++){
+                temp+=h[i*d+j]*eigenvec[j];
+            }
+            for (int j=0;j<d;j++){
+                c1_h[j]=eigenvec[j]*temp;
+                c2_h[j]=h[i*d+j]-c1_h[j];
+            }
+            vector<float> temp0(r,0.0f);
+            matmat(eigenvec, a, temp0, 1, d, r, 0, i);
+            matmat(eigenvec, temp0, c1_a, d, 1, r, 0, 0);
+            matmat(eigenvec, b, temp0, 1, d, r, 0, i);
+            matmat(eigenvec, temp0, c1_b, d, 1, r, 0, 0);
+            for (int j=0;j<d*r;j++){
+                c2_a[j]=a[i*d*r+j]-c1_a[j];
+                c2_b[j]=b[i*d*r+j]-c1_b[j];
+            }
+            //final ordering: c1 takes the place of i, aggregator second last, c2 last
+            for (int j=0;j<d;j++){
+                h.push_back(h[i*d+j]);
+                h[i*d+j]=c1_h[j];
+                dh.push_back(0.0f);
+                dh[i*d+j]=0.0f;
+                err.push_back(0.0f);
+                err[i*d+j]=0.0f;
+                err_diff.push_back(0.0f);
+                err_diff[i*d+j]=0.0f;
+                for (int k=0;k<d;k++){
+                    err_cov.push_back(0.0f);
+                    err_cov[i*d*d+j*d+k]=0.0f;
+                }
+                for (int k=0;k<r;k++){
+                    a.push_back(a[i*d*r+j*r+k]);
+                    b.push_back(b[i*d*r+j*r+k]);
+                    a[i*d*r+j*r+k]=c1_a[j*r+k];
+                    b[i*d*r+j*r+k]=c1_b[j*r+k];
+                    da.push_back(0.0f);
+                    db.push_back(0.0f);
+                    da[i*d*r+j*r+k]=0.0f;
+                    db[i*d*r+j*r+k]=0.0f;
+                }
+            }
+            for (int j=0;j<d;j++){
+                h.push_back(c2_h[j]);
+                dh.push_back(0.0f);
+                err.push_back(0.0f);
+                err_diff.push_back(0.0f);
+                for (int k=0;k<d;k++){
+                    err_cov.push_back(0.0f);
+                }
+                for (int k=0;k<r;k++){
+                    a.push_back(c2_a[j*r+k]);
+                    b.push_back(c2_b[j*r+k]);
+                    da.push_back(0.0f);
+                    db.push_back(0.0f);
+                }
+            }
+            u.push_back(0.0f);
+            u.push_back(0.0f);
+            u[i]=0.0f;
+            e.push_back(e[i]/3);
+            e.push_back(e[i]/3);
+            e[i]/=3;
+            stress.push_back(0.0f);
+            stress.push_back(0.0f);
+            stress[i]=0;
+            E.push_back(E[i]);
+            V.push_back(V[i]);
+            S.push_back(S[i]);
+            E.push_back(E[i]);
+            V.push_back(V[i]);
+            S.push_back(S[i]);
+            dna.push_back(dna[i]);
+            dna.push_back(dna[i]);
+            input.push_back(false);
+            input.push_back(false);
+            adj.push_back({});
+            adj.push_back({});
+            radj.push_back({});
+            radj.push_back({});
+            n+=2;
+            for (auto par:radj[i]){
+                adj[par].insert(n-1);
+                radj[n-1].insert(par);
+            }
+            for (auto chl:adj[i]){
+                adj[n-2].insert(chl);
+                radj[chl].erase(i);
+                radj[chl].insert(n-2);
+            }
+            adj[i]={n-2};
+            adj[n-1]={n-2};
+            radj[n-2]={i, n-1};
+        }
+        void set_dna(){
+            for (int i=0;i<n;i++){
+                dna[i].dh_chl_contrib=0.6f*(1.0f-S[i].val);
+                dna[i].dh_par_contrib=0.8f*(S[i].val);
+                dna[i].fast_adaptation_rate=4.0f*E[i].val*V[i].val;
+                dna[i].slow_adaptation_learning_rate_a=3.0f*E[i].val*V[i].val;
+                dna[i].slow_adaptation_learning_rate_b=6.0f*E[i].val*V[i].val;
+                dna[i].h_decay=0.03f*(1-S[i].val)*V[i].val;
+                dna[i].e_decay=0.00004f*(1.0f-V[i].val);
+                dna[i].signal_income=0.6f*S[i].val;
+                dna[i].cost_of_complexity=0.00001f*S[i].val*(1-V[i].val);
+                dna[i].cost_of_plasticity=0.002f*(1-S[i].val)*E[i].val;
+                float E_clamp=min(0.65f, max(0.35f, E[i].val));
+                dna[i].curiosity=1.0f*E_clamp;
+                dna[i].stability=0.8f*(1.0f-E_clamp);
+                dna[i].surprise_tax=0.35f*(1.0f-V[i].val);//*(1-E[i].val)*S[i].val;
+                dna[i].a_decay=0.02f*(1.0f-S[i].val)*V[i].val;
+                dna[i].b_decay=0.02f*(1.0f-S[i].val)*V[i].val;
+                dna[i].cost_of_thought=0.002f*(1.0f-S[i].val)*E[i].val;
+                dna[i].stress_decay=0.8f*S[i].val*(1.0f-V[i].val);
+                dna[i].raw_signal_par=0.05f*E[i].val*(1.0f-V[i].val);
+                dna[i].raw_signal_chl=0.05f*E[i].val*(1.0f-V[i].val);
+            }
+        }
+        void reset(){
+            n=2;
+            adj.assign(n,unordered_set<int>{}); radj.assign(n,unordered_set<int>{}); dna.assign(n,genes());
+            if (input.size()>n){
+                input.erase(input.begin()+n, input.end());
+            }
+            h.assign(n*d, 0.0f);
+            dh.assign(n*d, 0.0f);
+            e.assign(n, starting_energy);
+            err.assign(n*d, 0.0f);
+            err_cov.assign(n*d*d, 0.0f);
+            err_diff.assign(n*d, 0.0f);
+            u.assign(n, 0.0f);
+            a.assign(n*d*r, 0.0f);
+            da.assign(n*d*r, 0.0f);
+            b.assign(n*d*r, 0.0f);
+            db.assign(n*d*r, 0.0f);
+            stress.assign(n, 0.0f);
+            par_signal.assign(r, 0.0f);
+            emitted_signal_par.assign(r, 0.0f);
+            received_signal_par.assign(d, 0.0f);
+            chl_signal.assign(r, 0.0f);
+            emitted_signal_chl.assign(r, 0.0f);
+            received_signal_chl.assign(d, 0.0f);
+            ticks=0;
+            E.assign(n, iE);
+            V.assign(n, iV);
+            S.assign(n, iS);
+            adj.assign(n,unordered_set<int>{}); radj.assign(n,unordered_set<int>{});
             for (int i=0;i<n;i++){
                 for (int j=0;j<d;j++){
                     for (int k=0;k<r;k++){
@@ -183,11 +437,17 @@ class lupus{
                     }
                 }
             }
+            adj[0].insert(1);
+            radj[1].insert(0);
+            radj[0].insert(1);
+            adj[1].insert(0);
+            set_dna();
         }
         void forward(){
             nu=u;
             nh=h;
             nerr=err;
+            nerr_diff=err_diff;
             for (int i=0;i<n;i++){
                 //step 1: aggregate belief from parents
                 fill(all(emitted_signal_par), 0.0f);
@@ -198,6 +458,11 @@ class lupus{
                     }
                 }
                 matvec(a, emitted_signal_par, received_signal_par ,d, r, i, 0);
+                for (auto par:radj[i]){
+                    for (int j=0;j<d;j++){
+                        received_signal_par[j]+=dna[i].raw_signal_par*h[par*d+j]/(1.0f+u[par]);
+                    }
+                }
                 for (int j=0;j<d;j++){
                     received_signal_par[j]=tanh_mag*tanhf(received_signal_par[j]/tanh_mag);
                 }
@@ -205,6 +470,12 @@ class lupus{
                 for (int j=0;j<d;j++){
                     nerr[i*d+j]=received_signal_par[j]-h[i*d+j];
                     surprise+=nerr[i*d+j]*nerr[i*d+j];
+                }
+                //error covariance matrix
+                for (int j=0;j<d;j++){
+                    for (int k=0;k<d;k++){
+                        err_cov[i*d*d+j*d+k]+=dt*(nerr[i*d+j]*nerr[i*d+k]-err_cov[i*d*d+j*d+k]);
+                    }
                 }
                 //step 2: aggregate error from children
                 fill(all(emitted_signal_chl), 0.0f);
@@ -215,14 +486,19 @@ class lupus{
                     }
                 }
                 matvec(b, emitted_signal_chl, received_signal_chl, d, r, i, 0);
+                for (auto chl:adj[i]){
+                    for (int j=0;j<d;j++){
+                        received_signal_chl[j]+=dna[i].raw_signal_chl*err[chl*d+j]/(1.0f+u[chl]);
+                    }
+                }
                 for (int j=0;j<d;j++){
                     received_signal_chl[j]=tanh_mag*tanhf(received_signal_chl[j]/tanh_mag);
                 }
                 for (int j=0;j<d;j++){
-                    err_diff[i*d+j]=received_signal_chl[j]-err[i*d+j];
-                    surprise+=err_diff[i*d+j]*err_diff[i*d+j];
+                    nerr_diff[i*d+j]=received_signal_chl[j]-err[i*d+j];
+                    surprise+=nerr_diff[i*d+j]*nerr_diff[i*d+j];
                 }
-                float sig_mag=mag(received_signal_par, 0, received_signal_par.size())+mag(received_signal_chl, 0, received_signal_chl.size()); //magnitude of received signal
+                sig_mag=mag(received_signal_par, 0, received_signal_par.size())+mag(received_signal_chl, 0, received_signal_chl.size()); //magnitude of received signal
                 //move h
                 for (int j=0;j<d;j++){
                     if (input[i]) continue;
@@ -234,42 +510,52 @@ class lupus{
                 nu[i]+=dt*((surprise/d)-u[i]); //uncertainty is a moving average of surprise
                 //move a
                 delta_rule(a, emitted_signal_par, nerr, dna[i].slow_adaptation_learning_rate_a, da, dna[i].a_decay, d, r, i);
-                //move b (hypothesis here - align the errors, invert A=sort of "unify/harmonize" the whole network)
-                delta_rule(b, emitted_signal_chl, err_diff, dna[i].slow_adaptation_learning_rate_b, db, dna[i].b_decay, d, r, i);
+                //move b (hypothesis here - align the errors, invert A=sort of "unify/harmonize" the whole network. success spreads, uncertainty scaling makes failures spread much less)
+                delta_rule(b, emitted_signal_chl, nerr_diff, dna[i].slow_adaptation_learning_rate_b, db, dna[i].b_decay, d, r, i);
                 //update energy
                 if (input[i]){
                     //it's hard for input nodes to do well, and they provide the only signal source, so they should always be able to emit signal (scaled by e/(1+e) * 1/(1+u))
                     e[i]=100.0f;
                     nu[i]=0.0f;
+                    stress[i]=0.0f;
+                } else{
+                    e[i]+=dt*(1.0/(1.0f+u[i])*(dna[i].curiosity*dna[i].signal_income*sig_mag/(1.0f+sig_mag)-dna[i].stability*dna[i].surprise_tax*surprise)-dna[i].cost_of_thought*mag(dh, i*d, d)-dna[i].cost_of_complexity*(mag(a, i*d*r, d*r)+mag(b, i*d*r, d*r))-dna[i].cost_of_plasticity*(mag(da, i*d*r, d*r)+mag(db, i*d*r, d*r))-dna[i].e_decay*e[i]);
+                    e[i]=max(0.0f, e[i]);
+                    nu[i]=min(nu[i],10.0f);
+                    stress[i]+=dt*(u[i]-dna[i].stress_decay*stress[i]);
                 }
-                e[i]+=dt*(1.0/(1.0f+u[i])*(dna[i].curiosity*dna[i].signal_income*sig_mag/(1.0f+sig_mag)-dna[i].stability*dna[i].surprise_tax*surprise)-dna[i].cost_of_thought*mag(dh, i*d, d)-dna[i].cost_of_complexity*(mag(a, i*d*r, d*r)+mag(b, i*d*r, d*r))-dna[i].e_decay*e[i]);
-                e[i]=max(0.0f, e[i]);
-                nu[i]=min(nu[i],10.0f);
             }
             for (int i=0;i<n;i++){
-                //TODO: proper values
-                E[i].step((e[i]/(e[i]+1.0f))*(1/(u[i]+1.0f)));
-                V[i].step(1.0f/(e[i]+0.1f)+min(1.0f, mag(dh, i*d, d)));
-                S[i].step(u[i]/(1.0f+u[i]));
-                dna[i].dh_chl_contrib=1.0f*(1.0f-S[i].val);
-                dna[i].dh_par_contrib=1.0f*(S[i].val);
-                dna[i].fast_adaptation_rate=10.0f*E[i].val*V[i].val;
-                dna[i].slow_adaptation_learning_rate_a=0.01f*E[i].val*V[i].val;
-                dna[i].slow_adaptation_learning_rate_b=0.015f*E[i].val*V[i].val;
-                dna[i].h_decay=0.05f*(1-S[i].val)*V[i].val;
-                dna[i].e_decay=0.05f*V[i].val;
-                dna[i].signal_income=1.0f*(1-S[i].val);
-                dna[i].cost_of_complexity=0.2f*S[i].val*(1-E[i].val);
-                dna[i].curiosity=1.0f*E[i].val;
-                dna[i].stability=1.0f*(1-E[i].val);
-                dna[i].surprise_tax=1.0f;//*(1-V[i].val)*(1-E[i].val)*S[i].val;
-                dna[i].a_decay=0.05f*(1-S[i].val)*V[i].val;
-                dna[i].b_decay=0.05f*(1-S[i].val)*V[i].val;
-                dna[i].cost_of_thought=0.05f*(1-S[i].val)*E[i].val;
+                /*
+                E: Do I have energy and signal?
+                V: Is something unstable, uncertain, or silent?
+                S: How stable am I? Do I trust myself? How certain am I? 
+                */
+                E[i].step((e[i]/(e[i]+1.0f))*(0.3f+0.7f*(sig_mag/(1.0f+sig_mag))*(u[i]/(u[i]+1.0f))));
+                V[i].step((0.5*u[i]/(u[i]+1.0f))+0.2f/(e[i]+0.1f)+0.3f*min(1.0f, mag(dh, i*d, d)));
+                float ferr=mag(err, i*d, d)+mag(err_diff, i*d, d);
+                float fmove=(sig_mag/(sig_mag+1.0f))*(mag(dh, i*d, d)+mag(da, i*d*r, d*r)+mag(db, i*d*r, d*r));
+                S[i].step(fmove/(fmove+u[i]+ferr+0.01f));
             }
+            set_dna();
             swap(h, nh);
             swap(err, nerr);
             swap(u, nu);
+            swap(err_diff, nerr_diff);
+            for (int i=0;i<n;i++){
+                if (!input[i] && stress[i]>mitosis_threshold && e[i]>mitosis_energy){
+                    cout<<"BEFORE MITOSIS, ORGANISM TICK: "<<ticks
+                    <<", NODE: "<<i
+                    <<", E: "<<e[i]
+                    <<", STRESS: "<<stress[i]
+                    <<", U: "<<u[i]
+                    <<", EVS: ("<<E[i].val<<", "<<V[i].val<<", "<<S[i].val<<")"
+                    <<endl;
+                    mitosis(i);
+                }
+            }
+            if (ticks%cticks==0) cleanup();
+            ticks++;
         }
         void update(int k){
             for (int i=0;i<k;i++) forward();
@@ -277,8 +563,9 @@ class lupus{
         void step(){
             update(5);
         }
-};
-vector<bool> un_input(n, false); //input mask
+
+    };
+vector<bool> un_input(2, false); //input mask
 void update_data(float &x, float &y, float &z, int i, string tp) {
     //NOTA BENE: MOST OF THESE TESTING THINGS WERE WRITTEN BY AI TO MAKE SURE THAT THEY HAD ROUGHLY THE SAME MAGNITUDE, AND ALSO JUST HOW THEY WORK IN THE FIRST PLACE - MEANT FOR A QUICK NULL HYPOTHESIS TEST AND A FEW ABLATION TESTS
     if (tp=="lorenz"){
@@ -339,43 +626,51 @@ void update_data(float &x, float &y, float &z, int i, string tp) {
         z = max(0.0f, min(50.0f, z));
     }
 }
-vector<int> input_nodes{0, 10, 20, 30, 40, 50, 60, 70, 80, 90};
-float curp=1.0f;
+vector<int> input_nodes{0};
 int main(){
     for (auto xx:input_nodes){
         un_input[xx]=true;
     }
-    cout<<"smallworld p: "<<curp<<endl;
     for (auto curtp:vector<string>{"lorenz", "sin", "brownian", "rossler", "fourier", "o-u"}){
         cout<<"RUNNING EXPERIMENT "<<curtp<<endl;
-        for (int num=1;num<=2;num++){
+        for (int num=1;num<=5;num++){
             float curx=0.05f, cury=0.1f, curz=-0.025f;
-            trait iE{0.9f, 0.5f, 0.4f, 0.9f, 0.0f, 0.05f, 0.05f, 0.4f};
-            trait iV{0.9f, 0.65f, 0.6f, 0.85f, 0.0f, 0.05f, 0.1f, 0.6f};
-            trait iS{0.1f, 0.3f, 0.2f, 0.95f, 0.0f, 0.05f, 0.03f, 0.2f};
-            lupus sextus(genes(), iE, iV, iS, un_input);
-            sextus.reset(curp);
+            trait iE{0.75f, 0.65f, 0.25f, 0.85f, 0.0f, 0.20f, 0.02f, 0.25f};
+            trait iV{0.55f, 0.50f, 0.35f, 0.80f, 0.0f, 0.25f, 0.03f, 0.35f};
+            trait iS{0.35f, 0.40f, 0.20f, 0.90f, 0.0f, 0.25f, 0.015f, 0.25f};
+            lupus sextus(iE, iV, iS, un_input, 100);
+            sextus.reset();
             for (int i=0;i<100000;i++){
                 //cout<<"STEP NUMBER: "<<i+1<<endl;
                 update_data(curx, cury, curz, i, curtp);
                 //cout<<"POS AT: "<<curx<<", "<<cury<<", "<<curz<<endl;
                 for (auto xx:input_nodes){
-                    sextus.h[xx*d+0]=curx/5.0f;
-                    sextus.h[xx*d+1]=cury/5.0f;
-                    sextus.h[xx*d+2]=curz/5.0f;
+                    sextus.h[xx*sextus.d+0]=curx/5.0f;
+                    sextus.h[xx*sextus.d+1]=cury/5.0f;
+                    sextus.h[xx*sextus.d+2]=curz/5.0f;
                 }
-                if (i%200==0){
-                    cout<<"TICK "<<i<<", AVERAGE U: "<<accumulate(all(sextus.u), 0.0f)/n<<endl;
+                if (i%8000==0){
+                    cout<<"TICK "<<i<<endl;
+                    for (int j=0;j<sextus.n;j++){
+                        cout<<"NODE "<<j+1
+                        <<", A_MAG: "<<mag(sextus.a, j*sextus.d*sextus.r, sextus.d*sextus.r)
+                        <<", B_MAG: "<<mag(sextus.b, j*sextus.d*sextus.r, sextus.d*sextus.r)
+                        <<", U: "<<sextus.u[j]
+                        <<", energy: "<<sextus.e[j]
+                        <<", EVS: ("<<sextus.E[j].val<<", "<<sextus.V[j].val<<", "<<sextus.S[j].val<<")"
+                        <<", STRESS: "<<sextus.stress[j]
+                        <<endl;
+                    }
                 }
                 sextus.step();
                 //cout<<"NODES EVS:"<<endl;
                 int tot=0;
-                for (int j=0;j<n;j++){
+                for (int j=0;j<sextus.n;j++){
                     //cout<<"NODE "<<j+1<<": "<<endl;
                     //cout<<"E="<<setprecision(5)<<sextus.E[j].val<<"; V="<<setprecision(5)<<sextus.V[j].val<<"; S="<<setprecision(5)<<sextus.S[j].val<<"; energy="<<setprecision(5)<<sextus.e[j]<<"; uncertainty="<<setprecision(5)<<sextus.u[j]<<"; a_mag="<<setprecision(5)<<mag(sextus.a, j*d*r, d*r)<<"; b_mag="<<setprecision(5)<<mag(sextus.b, j*d*r, d*r)<<endl;
                     if (sextus.e[j]==0.0f) tot++;
                 }
-                if (tot==n-input_nodes.size()) {
+                if (tot==sextus.n-input_nodes.size()) {
                     cout<<"DEATH "<<num<<": "<<i<<endl;
                     break;
                 }
