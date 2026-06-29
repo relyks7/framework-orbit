@@ -80,24 +80,20 @@ struct genes{ //"all roads lead to darwinism"
 // float stability=0.9f;
 // float surprise_tax=0.5f; //"surprise tax" would be a terrible phrase in any other context
 // float a_decay=0.05f;
-class trait{ //preferably, decay=plasticity
+class trait{ //decay=plasticity
     public:
         float val;
         float target_val;
-        float decay;
-        float v_decay;
-        float voltage;
-        float capacity;
-        float noise;
         float plasticity;
+        float decay;
+        float resp;
+        float noise;
         void step(float feeder_val){
-            target_val=target_val+dt*(plasticity*feeder_val-decay*target_val+gaussian_noise(0.0f, noise));
-            target_val=max(0.05f,min(0.95f,target_val));
-            voltage+=dt*(abs(feeder_val)-voltage*(1-v_decay));
-            if (voltage>capacity){
-                voltage=0.0f;
-                val=target_val;
-            }
+            feeder_val=max(0.0f, min(1.0f, feeder_val));
+            target_val=target_val+dt*(plasticity*feeder_val-decay*target_val)+sqrtf(dt)*gaussian_noise(0.0f, noise);
+            target_val=max(0.01f,min(0.99f,target_val));
+            val+=dt*resp*(target_val-val);
+            val=max(0.01f,min(0.99f,val));
         }
 };
 class lupus{
@@ -118,7 +114,7 @@ class lupus{
         vector<float> b; //emitters
         vector<float> db;
         vector<float> stress;
-        float sig_mag;
+        vector<float> sig_mag;
         //scratch
         vector<float> par_signal;
         vector<float> emitted_signal_par;
@@ -159,6 +155,7 @@ class lupus{
             chl_signal.assign(r, 0.0f);
             emitted_signal_chl.assign(r, 0.0f);
             received_signal_chl.assign(d, 0.0f);
+            sig_mag.assign(n,0.0f);
             cticks=icticks;
             E.assign(n, initE);
             V.assign(n, initV);
@@ -190,6 +187,7 @@ class lupus{
             vector<float> nb{};
             vector<float> ndb{};
             vector<float> nstress{};
+            vector<float> nsig_mag{};
             vector<genes> ndna{};
             vector<float> nerr_cov{};
             vector<trait> nE;
@@ -198,6 +196,7 @@ class lupus{
             vector<bool> ninput;
             for (int i=0;i<n;i++){
                 if (alive[i]){
+                    nsig_mag.push_back(0.0f);
                     ninput.push_back(input[i]);
                     nE.push_back(E[i]);
                     nV.push_back(V[i]);
@@ -240,6 +239,7 @@ class lupus{
             swap(V, nV);
             swap(S, nS);
             swap(input, ninput);
+            swap(sig_mag, nsig_mag);
             vector<unordered_set<int>> nadj{};
             vector<unordered_set<int>> nradj{};
             for (int i=0;i<n;i++){
@@ -339,6 +339,8 @@ class lupus{
                     db.push_back(0.0f);
                 }
             }
+            sig_mag.push_back(0.0f);
+            sig_mag.push_back(0.0f);
             u.push_back(0.0f);
             u.push_back(0.0f);
             u[i]=0.0f;
@@ -378,26 +380,25 @@ class lupus{
         }
         void set_dna(){
             for (int i=0;i<n;i++){
-                dna[i].dh_chl_contrib=0.6f*(1.0f-S[i].val);
-                dna[i].dh_par_contrib=0.8f*(S[i].val);
-                dna[i].fast_adaptation_rate=4.0f*E[i].val*V[i].val;
-                dna[i].slow_adaptation_learning_rate_a=3.0f*E[i].val*V[i].val;
-                dna[i].slow_adaptation_learning_rate_b=6.0f*E[i].val*V[i].val;
-                dna[i].h_decay=0.03f*(1-S[i].val)*V[i].val;
-                dna[i].e_decay=0.00004f*(1.0f-V[i].val);
-                dna[i].signal_income=0.6f*S[i].val;
-                dna[i].cost_of_complexity=0.00001f*S[i].val*(1-V[i].val);
-                dna[i].cost_of_plasticity=0.002f*(1-S[i].val)*E[i].val;
-                float E_clamp=min(0.65f, max(0.35f, E[i].val));
-                dna[i].curiosity=1.0f*E_clamp;
-                dna[i].stability=0.8f*(1.0f-E_clamp);
-                dna[i].surprise_tax=0.35f*(1.0f-V[i].val);//*(1-E[i].val)*S[i].val;
-                dna[i].a_decay=0.02f*(1.0f-S[i].val)*V[i].val;
-                dna[i].b_decay=0.02f*(1.0f-S[i].val)*V[i].val;
-                dna[i].cost_of_thought=0.002f*(1.0f-S[i].val)*E[i].val;
-                dna[i].stress_decay=0.8f*S[i].val*(1.0f-V[i].val);
-                dna[i].raw_signal_par=0.05f*E[i].val*(1.0f-V[i].val);
-                dna[i].raw_signal_chl=0.05f*E[i].val*(1.0f-V[i].val);
+                dna[i].dh_chl_contrib=0.6f;
+                dna[i].dh_par_contrib=1.0f;
+                dna[i].signal_income=2.0f;
+                dna[i].cost_of_complexity=0.5f;
+                dna[i].cost_of_thought=0.1f;
+                dna[i].raw_signal_par=0.3f;
+                dna[i].raw_signal_chl=0.3f;
+                dna[i].e_decay=0.005f;
+                dna[i].surprise_tax=0.5f;
+                dna[i].cost_of_plasticity=5.0f*(1.0f-V[i].val*(1.0f-S[i].val));
+                dna[i].curiosity=E[i].val;
+                dna[i].stability=S[i].val;
+                dna[i].a_decay=0.05f*V[i].val*(1.0f-S[i].val);
+                dna[i].b_decay=0.05f*V[i].val*(1.0f-S[i].val);
+                dna[i].fast_adaptation_rate=10.0f*E[i].val*(0.8f*V[i].val+0.2f*(1-S[i].val));
+                dna[i].slow_adaptation_learning_rate_a=0.005f*V[i].val*(0.8f*E[i].val+0.2f*(1-S[i].val));
+                dna[i].slow_adaptation_learning_rate_b=0.0075f*V[i].val*(0.8f*E[i].val+0.2f*(1-S[i].val));
+                dna[i].h_decay=0.005f*V[i].val*(1-S[i].val);
+                dna[i].stress_decay=S[i].val*(1.0f-0.5f*V[i].val);
             }
         }
         void reset(){
@@ -424,6 +425,7 @@ class lupus{
             chl_signal.assign(r, 0.0f);
             emitted_signal_chl.assign(r, 0.0f);
             received_signal_chl.assign(d, 0.0f);
+            sig_mag.assign(n,0.0f);
             ticks=0;
             E.assign(n, iE);
             V.assign(n, iV);
@@ -498,7 +500,7 @@ class lupus{
                     nerr_diff[i*d+j]=received_signal_chl[j]-err[i*d+j];
                     surprise+=nerr_diff[i*d+j]*nerr_diff[i*d+j];
                 }
-                sig_mag=mag(received_signal_par, 0, received_signal_par.size())+mag(received_signal_chl, 0, received_signal_chl.size()); //magnitude of received signal
+                sig_mag[i]=mag(received_signal_par, 0, received_signal_par.size())+mag(received_signal_chl, 0, received_signal_chl.size()); //magnitude of received signal
                 //move h
                 for (int j=0;j<d;j++){
                     if (input[i]) continue;
@@ -519,7 +521,7 @@ class lupus{
                     nu[i]=0.0f;
                     stress[i]=0.0f;
                 } else{
-                    e[i]+=dt*(1.0/(1.0f+u[i])*(dna[i].curiosity*dna[i].signal_income*sig_mag/(1.0f+sig_mag)-dna[i].stability*dna[i].surprise_tax*surprise)-dna[i].cost_of_thought*mag(dh, i*d, d)-dna[i].cost_of_complexity*(mag(a, i*d*r, d*r)+mag(b, i*d*r, d*r))-dna[i].cost_of_plasticity*(mag(da, i*d*r, d*r)+mag(db, i*d*r, d*r))-dna[i].e_decay*e[i]);
+                    e[i]+=dt*(1.0/(1.0f+u[i])*(dna[i].curiosity*dna[i].signal_income*sig_mag[i]/(1.0f+sig_mag[i])-dna[i].stability*dna[i].surprise_tax*surprise)-dna[i].cost_of_thought*mag(dh, i*d, d)-dna[i].cost_of_complexity*(mag(a, i*d*r, d*r)+mag(b, i*d*r, d*r))-dna[i].cost_of_plasticity*(mag(da, i*d*r, d*r)+mag(db, i*d*r, d*r))-dna[i].e_decay*e[i]);
                     e[i]=max(0.0f, e[i]);
                     nu[i]=min(nu[i],10.0f);
                     stress[i]+=dt*(u[i]-dna[i].stress_decay*stress[i]);
@@ -528,21 +530,28 @@ class lupus{
             for (int i=0;i<n;i++){
                 /*
                 E: Do I have energy and signal?
-                V: Is something unstable, uncertain, or silent?
+                V: Is something unstable, uncertain, or silent? Do I need to change?
                 S: How stable am I? Do I trust myself? How certain am I? 
                 */
-                E[i].step((e[i]/(e[i]+1.0f))*(0.3f+0.7f*(sig_mag/(1.0f+sig_mag))*(u[i]/(u[i]+1.0f))));
-                V[i].step((0.5*u[i]/(u[i]+1.0f))+0.2f/(e[i]+0.1f)+0.3f*min(1.0f, mag(dh, i*d, d)));
-                float ferr=mag(err, i*d, d)+mag(err_diff, i*d, d);
-                float fmove=(sig_mag/(sig_mag+1.0f))*(mag(dh, i*d, d)+mag(da, i*d*r, d*r)+mag(db, i*d*r, d*r));
-                S[i].step(fmove/(fmove+u[i]+ferr+0.01f));
+               float e_s=e[i]/(1.0f+e[i]);
+               float u_s=u[i]/(1.0f+u[i]);
+               float conf=1.0f/(1.0f+u[i]);
+               float sig=sig_mag[i]/(1.0f+sig_mag[i]);
+               float silent=1.0f/(1.0f+50.0f*sig_mag[i]);
+               float mv_mag=mag(dh, i*d, d)+mag(da, i*d*r, d*r)+mag(db, i*d*r, d*r);
+               float mv=mv_mag/(1.0f+mv_mag);
+               float stb=1.0f/(1.0f+mv_mag);
+               E[i].step(e_s*sig);
+               V[i].step(mv*0.5f+u_s*0.2f+silent*0.3f);
+               S[i].step(conf*stb);
             }
             set_dna();
             swap(h, nh);
             swap(err, nerr);
             swap(u, nu);
             swap(err_diff, nerr_diff);
-            for (int i=0;i<n;i++){
+            int tempn=n;
+            for (int i=0;i<tempn;i++){
                 if (!input[i] && stress[i]>mitosis_threshold && e[i]>mitosis_energy){
                     cout<<"BEFORE MITOSIS, ORGANISM TICK: "<<ticks
                     <<", NODE: "<<i
@@ -554,7 +563,7 @@ class lupus{
                     mitosis(i);
                 }
             }
-            if (ticks%cticks==0) cleanup();
+            if (ticks>0 && ticks%cticks==0) cleanup();
             ticks++;
         }
         void update(int k){
@@ -635,9 +644,9 @@ int main(){
         cout<<"RUNNING EXPERIMENT "<<curtp<<endl;
         for (int num=1;num<=5;num++){
             float curx=0.05f, cury=0.1f, curz=-0.025f;
-            trait iE{0.75f, 0.65f, 0.25f, 0.85f, 0.0f, 0.20f, 0.02f, 0.25f};
-            trait iV{0.55f, 0.50f, 0.35f, 0.80f, 0.0f, 0.25f, 0.03f, 0.35f};
-            trait iS{0.35f, 0.40f, 0.20f, 0.90f, 0.0f, 0.25f, 0.015f, 0.25f};
+            trait iE{0.35f, 0.35f, 0.02f, 0.02f, 0.05f, 0.003f};
+            trait iV{0.35f, 0.35f, 0.08f, 0.08f, 0.20f, 0.006f};
+            trait iS{0.35f, 0.35f, 0.03f, 0.03f, 0.08f, 0.002f};
             lupus sextus(iE, iV, iS, un_input, 100);
             sextus.reset();
             for (int i=0;i<100000;i++){
