@@ -19,11 +19,12 @@ float gaussian_noise(float mean, float stddev){
 }
 thread_local uniform_real_distribution<float> disf(0.0f, 1.0f);
 float dt=0.01f;
-float starting_energy=50.0f;
+float starting_energy=500.0f;
 float delta_clamp=0.25f;
 float phi=1.618033988749895;
 float tanh_mag=10.0f;
-float mitosis_threshold=7.5f; //tau
+float mitosis_threshold=10.0f; //tau
+float mitosis_energy=120.0f; //energy threshold for mitosis: don't mitose if doing so will kill you
 void matvec(const vector<float>& a, const vector<float>& b, vector<float>& c, int n, int m, int idx1, int idx2){
     cblas_sgemv(CblasRowMajor, CblasNoTrans, n, m, 1.0f, a.data()+(idx1*n*m), m, b.data()+(idx2*m), 1, 0.0f, c.data(), 1);
 }
@@ -52,10 +53,13 @@ struct genes{ //"all roads lead to darwinism"
     float slow_adaptation_learning_rate_b; //a bit larger due to it's reception of error requiring more volatile shift
     float h_decay;
     float e_decay;
+    float signal_income;
     float cost_of_thought;
     float cost_of_plasticity;
     float cost_of_complexity;
-    float correct_income;
+    float curiosity;
+    float stability;
+    float surprise_tax; //"surprise tax" would be a terrible phrase in any other context
     float a_decay;
     float b_decay;
     float stress_decay;
@@ -110,6 +114,7 @@ class lupus{
         vector<float> b; //emitters
         vector<float> db;
         vector<float> stress;
+        vector<float> sig_mag;
         //scratch
         vector<float> par_signal;
         vector<float> emitted_signal_par;
@@ -150,6 +155,7 @@ class lupus{
             chl_signal.assign(r, 0.0f);
             emitted_signal_chl.assign(r, 0.0f);
             received_signal_chl.assign(d, 0.0f);
+            sig_mag.assign(n,0.0f);
             cticks=icticks;
             E.assign(n, initE);
             V.assign(n, initV);
@@ -181,6 +187,7 @@ class lupus{
             vector<float> nb{};
             vector<float> ndb{};
             vector<float> nstress{};
+            vector<float> nsig_mag{};
             vector<genes> ndna{};
             vector<float> nerr_cov{};
             vector<trait> nE;
@@ -189,6 +196,7 @@ class lupus{
             vector<bool> ninput;
             for (int i=0;i<n;i++){
                 if (alive[i]){
+                    nsig_mag.push_back(0.0f);
                     ninput.push_back(input[i]);
                     nE.push_back(E[i]);
                     nV.push_back(V[i]);
@@ -231,6 +239,7 @@ class lupus{
             swap(V, nV);
             swap(S, nS);
             swap(input, ninput);
+            swap(sig_mag, nsig_mag);
             vector<unordered_set<int>> nadj{};
             vector<unordered_set<int>> nradj{};
             for (int i=0;i<n;i++){
@@ -330,11 +339,14 @@ class lupus{
                     db.push_back(0.0f);
                 }
             }
+            sig_mag.push_back(0.0f);
+            sig_mag.push_back(0.0f);
             u.push_back(0.0f);
             u.push_back(0.0f);
             u[i]=0.0f;
-            e.push_back(e[i]);
-            e.push_back(e[i]);
+            e.push_back(e[i]/3);
+            e.push_back(e[i]/3);
+            e[i]/=3;
             stress.push_back(0.0f);
             stress.push_back(0.0f);
             stress[i]=0;
@@ -370,20 +382,23 @@ class lupus{
             for (int i=0;i<n;i++){
                 dna[i].dh_chl_contrib=0.6f;
                 dna[i].dh_par_contrib=1.0f;
+                dna[i].signal_income=2.0f;
                 dna[i].cost_of_complexity=0.5f;
                 dna[i].cost_of_thought=0.1f;
                 dna[i].raw_signal_par=0.3f;
                 dna[i].raw_signal_chl=0.3f;
-                dna[i].e_decay=0.002f;
-                dna[i].correct_income=0.75f;
-                dna[i].cost_of_plasticity=1.0f*(1.0f-V[i].val*(1.0f-S[i].val));
-                dna[i].a_decay=0.005f*V[i].val*(1.0f-S[i].val);
-                dna[i].b_decay=0.005f*V[i].val*(1.0f-S[i].val);
+                dna[i].e_decay=0.005f;
+                dna[i].surprise_tax=0.5f;
+                dna[i].cost_of_plasticity=5.0f*(1.0f-V[i].val*(1.0f-S[i].val));
+                dna[i].curiosity=E[i].val;
+                dna[i].stability=S[i].val;
+                dna[i].a_decay=0.05f*V[i].val*(1.0f-S[i].val);
+                dna[i].b_decay=0.05f*V[i].val*(1.0f-S[i].val);
                 dna[i].fast_adaptation_rate=10.0f*E[i].val*(0.8f*V[i].val+0.2f*(1-S[i].val));
-                dna[i].slow_adaptation_learning_rate_a=0.025f*V[i].val*(0.8f*E[i].val+0.2f*(1-S[i].val));
-                dna[i].slow_adaptation_learning_rate_b=0.0375f*V[i].val*(0.8f*E[i].val+0.2f*(1-S[i].val));
+                dna[i].slow_adaptation_learning_rate_a=0.005f*V[i].val*(0.8f*E[i].val+0.2f*(1-S[i].val));
+                dna[i].slow_adaptation_learning_rate_b=0.0075f*V[i].val*(0.8f*E[i].val+0.2f*(1-S[i].val));
                 dna[i].h_decay=0.005f*V[i].val*(1-S[i].val);
-                dna[i].stress_decay=0.5f+1.5f*S[i].val;
+                dna[i].stress_decay=S[i].val*(1.0f-0.5f*V[i].val);
             }
         }
         void reset(){
@@ -410,6 +425,7 @@ class lupus{
             chl_signal.assign(r, 0.0f);
             emitted_signal_chl.assign(r, 0.0f);
             received_signal_chl.assign(d, 0.0f);
+            sig_mag.assign(n,0.0f);
             ticks=0;
             E.assign(n, iE);
             V.assign(n, iV);
@@ -440,7 +456,7 @@ class lupus{
                 for (auto par:radj[i]){
                     matvec_transpose(b, h, par_signal, d, r, par, par);
                     for (int j=0;j<r;j++){
-                        emitted_signal_par[j]+=tanh_mag*tanhf((1.0f/(1.0f+u[par])*par_signal[j])/tanh_mag);
+                        emitted_signal_par[j]+=tanh_mag*tanhf((e[par]/(1.0f+e[par]))*(1.0f/(1.0f+u[par])*par_signal[j])/tanh_mag);
                     }
                 }
                 matvec(a, emitted_signal_par, received_signal_par ,d, r, i, 0);
@@ -468,7 +484,7 @@ class lupus{
                 for (auto chl:adj[i]){
                     matvec_transpose(a, err, chl_signal, d, r, chl, chl);
                     for (int j=0;j<r;j++){
-                        emitted_signal_chl[j]+=tanh_mag*tanhf((1.0f/(1.0f+u[chl])*chl_signal[j])/tanh_mag);
+                        emitted_signal_chl[j]+=tanh_mag*tanhf((e[chl]/(1.0f+e[chl]))*(1.0f/(1.0f+u[chl])*chl_signal[j])/tanh_mag);
                     }
                 }
                 matvec(b, emitted_signal_chl, received_signal_chl, d, r, i, 0);
@@ -484,6 +500,7 @@ class lupus{
                     nerr_diff[i*d+j]=received_signal_chl[j]-err[i*d+j];
                     surprise+=nerr_diff[i*d+j]*nerr_diff[i*d+j];
                 }
+                sig_mag[i]=mag(received_signal_par, 0, received_signal_par.size())+mag(received_signal_chl, 0, received_signal_chl.size()); //magnitude of received signal
                 //move h
                 for (int j=0;j<d;j++){
                     if (input[i]) continue;
@@ -492,7 +509,7 @@ class lupus{
                     dh[i*d+j]=dt*(fast_adapt-dna[i].h_decay*h[i*d+j]+energy_noise);
                     nh[i*d+j]=tanh_mag*tanhf((nh[i*d+j]+dh[i*d+j])/tanh_mag);
                 }
-                nu[i]+=dt*((surprise/(2*d))-u[i]); //uncertainty is a moving average of surprise
+                nu[i]+=dt*((surprise/d)-u[i]); //uncertainty is a moving average of surprise
                 //move a
                 delta_rule(a, emitted_signal_par, nerr, dna[i].slow_adaptation_learning_rate_a, da, dna[i].a_decay, d, r, i);
                 //move b (hypothesis here - align the errors, invert A=sort of "unify/harmonize" the whole network. success spreads, uncertainty scaling makes failures spread much less)
@@ -500,30 +517,32 @@ class lupus{
                 //update energy
                 if (input[i]){
                     //it's hard for input nodes to do well, and they provide the only signal source, so they should always be able to emit signal (scaled by e/(1+e) * 1/(1+u))
-                    e[i]=1000.0f;
+                    e[i]=100.0f;
                     nu[i]=0.0f;
                     stress[i]=0.0f;
                 } else{
-                    e[i]+=dt*(dna[i].correct_income*(expf(-20.0f*surprise/(2*d)))-(dna[i].cost_of_thought*mag(dh, i*d, d)+dna[i].cost_of_complexity*(mag(a, i*d*r, d*r)+mag(b, i*d*r, d*r))+dna[i].cost_of_plasticity*(mag(da, i*d*r, d*r)+mag(db, i*d*r, d*r)))-dna[i].e_decay*e[i]);
+                    e[i]+=dt*(1.0/(1.0f+u[i])*(dna[i].curiosity*dna[i].signal_income*sig_mag[i]/(1.0f+sig_mag[i])-dna[i].stability*dna[i].surprise_tax*surprise)-dna[i].cost_of_thought*mag(dh, i*d, d)-dna[i].cost_of_complexity*(mag(a, i*d*r, d*r)+mag(b, i*d*r, d*r))-dna[i].cost_of_plasticity*(mag(da, i*d*r, d*r)+mag(db, i*d*r, d*r))-dna[i].e_decay*e[i]);
                     e[i]=max(0.0f, e[i]);
                     nu[i]=min(nu[i],10.0f);
-                    stress[i]+=dt*(nu[i]-dna[i].stress_decay*stress[i]);
+                    stress[i]+=dt*(u[i]-dna[i].stress_decay*stress[i]);
                 }
             }
             for (int i=0;i<n;i++){
                 /*
-                E: Do I have energy and am confident?
-                V: Is something unstable or uncertain? Do I need to change?
+                E: Do I have energy and signal?
+                V: Is something unstable, uncertain, or silent? Do I need to change?
                 S: How stable am I? Do I trust myself? How certain am I? 
                 */
-               float e_s=e[i]/(starting_energy+e[i]);
+               float e_s=e[i]/(1.0f+e[i]);
                float u_s=u[i]/(1.0f+u[i]);
                float conf=1.0f/(1.0f+u[i]);
+               float sig=sig_mag[i]/(1.0f+sig_mag[i]);
+               float silent=1.0f/(1.0f+50.0f*sig_mag[i]);
                float mv_mag=mag(dh, i*d, d)+mag(da, i*d*r, d*r)+mag(db, i*d*r, d*r);
                float mv=mv_mag/(1.0f+mv_mag);
                float stb=1.0f/(1.0f+mv_mag);
-               E[i].step(e_s*conf);
-               V[i].step(mv*0.5f+u_s*0.5f);
+               E[i].step(e_s*sig);
+               V[i].step(mv*0.5f+u_s*0.2f+silent*0.3f);
                S[i].step(conf*stb);
             }
             set_dna();
@@ -533,7 +552,7 @@ class lupus{
             swap(err_diff, nerr_diff);
             int tempn=n;
             for (int i=0;i<tempn;i++){
-                if (!input[i] && stress[i]>mitosis_threshold){
+                if (!input[i] && stress[i]>mitosis_threshold && e[i]>mitosis_energy){
                     cout<<"BEFORE MITOSIS, ORGANISM TICK: "<<ticks
                     <<", NODE: "<<i
                     <<", E: "<<e[i]
@@ -551,8 +570,9 @@ class lupus{
             for (int i=0;i<k;i++) forward();
         }
         void step(){
-            update(1);
+            update(5);
         }
+
     };
 vector<bool> un_input(2, false); //input mask
 void update_data(float &x, float &y, float &z, int i, string tp) {
@@ -614,25 +634,15 @@ void update_data(float &x, float &y, float &z, int i, string tp) {
         y = max(-27.0f, min(27.0f, y));
         z = max(0.0f, min(50.0f, z));
     }
-    if (tp=="constant"){
-        x=2.0f;
-        y=-1.0f;
-        z=3.0f;
-    }
 }
 vector<int> input_nodes{0};
 int main(){
-    cout<<"TAU: "<<mitosis_threshold<<endl;
     for (auto xx:input_nodes){
         un_input[xx]=true;
     }
-    vector<string> experiments{"lorenz", "sin", "brownian", "rossler", "fourier", "o-u", "constant"};
-    for (auto curtp:experiments){
+    for (auto curtp:vector<string>{"lorenz", "sin", "brownian", "rossler", "fourier", "o-u"}){
         cout<<"RUNNING EXPERIMENT "<<curtp<<endl;
-        int lived=0;
-        int died=0;
-        int avgdeath=0;
-        for (int num=1;num<=10;num++){
+        for (int num=1;num<=5;num++){
             float curx=0.05f, cury=0.1f, curz=-0.025f;
             trait iE{0.35f, 0.35f, 0.02f, 0.02f, 0.05f, 0.003f};
             trait iV{0.35f, 0.35f, 0.08f, 0.08f, 0.20f, 0.006f};
@@ -648,7 +658,7 @@ int main(){
                     sextus.h[xx*sextus.d+1]=cury/5.0f;
                     sextus.h[xx*sextus.d+2]=curz/5.0f;
                 }
-                if (i%50000==0){
+                if (i%8000==0){
                     cout<<"TICK "<<i<<endl;
                     for (int j=0;j<sextus.n;j++){
                         cout<<"NODE "<<j+1
@@ -671,19 +681,10 @@ int main(){
                 }
                 if (tot==sextus.n-input_nodes.size()) {
                     cout<<"DEATH "<<num<<": "<<i<<endl;
-                    died++;
-                    avgdeath+=i;
                     break;
-                }
-                if (i==99999) {
-                    lived++;
-                    avgdeath+=100000;
                 }
             }
         }
-        cout<<"LIVED: "<<lived<<endl;
-        cout<<"DIED: "<<died<<endl;
-        cout<<"AVERAGE SPAN: "<<avgdeath/10<<endl;
     }
     return 0;
 }
