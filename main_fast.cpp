@@ -425,8 +425,6 @@ class lupus{
             }
             adj[0].insert(1);
             radj[1].insert(0);
-            radj[0].insert(1);
-            adj[1].insert(0);
             set_dna();
         }
         void forward(){
@@ -468,7 +466,7 @@ class lupus{
                 for (auto chl:adj[i]){
                     matvec_transpose(a, err, chl_signal, d, r, chl, chl);
                     for (int j=0;j<r;j++){
-                        emitted_signal_chl[j]+=tanh_mag*tanhf((1.0f/(1.0f+u[chl])*chl_signal[j])/tanh_mag);
+                        emitted_signal_chl[j]+=tanh_mag*tanhf((u[chl]/(1.0f+u[chl])*chl_signal[j])/tanh_mag);
                     }
                 }
                 matvec(b, emitted_signal_chl, received_signal_chl, d, r, i, 0);
