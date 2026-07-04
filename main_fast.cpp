@@ -23,7 +23,8 @@ float starting_energy=50.0f;
 float delta_clamp=0.25f;
 float phi=1.618033988749895;
 float tanh_mag=10.0f;
-float mitosis_threshold=2.0f; //tau
+float mitosis_threshold=0.65; //tau
+float death_energy=40.0f; //omega
 void matvec(const vector<float>& a, const vector<float>& b, vector<float>& c, int n, int m, int idx1, int idx2){
     cblas_sgemv(CblasRowMajor, CblasNoTrans, n, m, 1.0f, a.data()+(idx1*n*m), m, b.data()+(idx2*m), 1, 0.0f, c.data(), 1);
 }
@@ -61,6 +62,7 @@ struct genes{ //"all roads lead to darwinism"
     float stress_decay;
     float raw_signal_par;
     float raw_signal_chl;
+    float stress_grow;
 };
 // float dh_chl_contrib=1.0f;
 // float dh_par_contrib=0.6f;
@@ -163,7 +165,7 @@ class lupus{
             vector<int> new_index(n,-1);
             int cnt=0;
             for (int i=0;i<n;i++){
-                if (e[i]<=0.0f){
+                if (e[i]<=death_energy){
                     alive[i]=false; 
                     cout<<"NODE "<<i<<" DEAD IN CLEANUP"<<endl;
                     continue;
@@ -376,14 +378,15 @@ class lupus{
                 dna[i].raw_signal_chl=0.3f;
                 dna[i].e_decay=0.002f;
                 dna[i].correct_income=0.75f;
+                dna[i].stress_grow=0.05f;
                 dna[i].cost_of_plasticity=1.0f*(1.0f-V[i].val*(1.0f-S[i].val));
                 dna[i].a_decay=0.005f*V[i].val*(1.0f-S[i].val);
                 dna[i].b_decay=0.005f*V[i].val*(1.0f-S[i].val);
                 dna[i].fast_adaptation_rate=10.0f*E[i].val*(0.8f*V[i].val+0.2f*(1-S[i].val));
                 dna[i].slow_adaptation_learning_rate_a=0.025f*V[i].val*(0.8f*E[i].val+0.2f*(1-S[i].val));
-                dna[i].slow_adaptation_learning_rate_b=0.0375f*V[i].val*(0.8f*E[i].val+0.2f*(1-S[i].val));
+                dna[i].slow_adaptation_learning_rate_b=0.025f*V[i].val*(0.8f*E[i].val+0.2f*(1-S[i].val));
                 dna[i].h_decay=0.005f*V[i].val*(1-S[i].val);
-                dna[i].stress_decay=0.25f+0.18f*S[i].val;
+                dna[i].stress_decay=0.001f+0.004f*S[i].val;
             }
         }
         void reset(){
@@ -505,7 +508,7 @@ class lupus{
                     e[i]+=dt*(dna[i].correct_income*(expf(-20.0f*surprise/(2*d)))-(dna[i].cost_of_thought*mag(dh, i*d, d)+dna[i].cost_of_complexity*(mag(a, i*d*r, d*r)+mag(b, i*d*r, d*r))+dna[i].cost_of_plasticity*(mag(da, i*d*r, d*r)+mag(db, i*d*r, d*r)))-dna[i].e_decay*e[i]);
                     e[i]=max(0.0f, e[i]);
                     nu[i]=min(nu[i],10.0f);
-                    stress[i]+=dt*(nu[i]-dna[i].stress_decay*stress[i]);
+                    stress[i]+=dt*(dna[i].stress_grow*nu[i]-dna[i].stress_decay*stress[i]);
                 }
             }
             for (int i=0;i<n;i++){
@@ -531,14 +534,14 @@ class lupus{
             swap(err_diff, nerr_diff);
             int tempn=n;
             for (int i=0;i<tempn;i++){
-                if (!input[i] && stress[i]>mitosis_threshold){
-                    // cout<<"BEFORE MITOSIS, ORGANISM TICK: "<<ticks
-                    // <<", NODE: "<<i
-                    // <<", E: "<<e[i]
-                    // <<", STRESS: "<<stress[i]
-                    // <<", U: "<<u[i]
-                    // <<", EVS: ("<<E[i].val<<", "<<V[i].val<<", "<<S[i].val<<")"
-                    // <<endl;
+                if (!input[i] && stress[i]>mitosis_threshold && e[i]>death_energy){
+                    cout<<"BEFORE MITOSIS, ORGANISM TICK: "<<ticks
+                    <<", NODE: "<<i
+                    <<", E: "<<e[i]
+                    <<", STRESS: "<<stress[i]
+                    <<", U: "<<u[i]
+                    <<", EVS: ("<<E[i].val<<", "<<V[i].val<<", "<<S[i].val<<")"
+                    <<endl;
                     mitosis(i);
                 }
             }
@@ -620,11 +623,11 @@ void update_data(float &x, float &y, float &z, int i, string tp) {
     }
 }
 vector<int> input_nodes{0};
-int run_exp(string curtp, int tot_num) {
+void run_exp(string curtp, int tot_num) {
     cout<<"RUNNING EXPERIMENT "<<curtp<<endl;
-    // int lived=0;
-    // int died=0;
-    // int avgdeath=0;
+    int lived=0;
+    int died=0;
+    int avgdeath=0;
     for (int num=1;num<=tot_num;num++){
         float curx=0.05f, cury=0.1f, curz=-0.025f;
         trait iE{0.35f, 0.35f, 0.02f, 0.02f, 0.05f, 0.003f};
@@ -641,70 +644,48 @@ int run_exp(string curtp, int tot_num) {
                 sextus.h[xx*sextus.d+1]=cury/5.0f;
                 sextus.h[xx*sextus.d+2]=curz/5.0f;
             }
-            // if (i%50000==0){
-            //     cout<<"TICK "<<i<<endl;
-            //     for (int j=0;j<sextus.n;j++){
-            //         cout<<"NODE "<<j+1
-            //         <<", A_MAG: "<<mag(sextus.a, j*sextus.d*sextus.r, sextus.d*sextus.r)
-            //         <<", B_MAG: "<<mag(sextus.b, j*sextus.d*sextus.r, sextus.d*sextus.r)
-            //         <<", U: "<<sextus.u[j]
-            //         <<", energy: "<<sextus.e[j]
-            //         <<", EVS: ("<<sextus.E[j].val<<", "<<sextus.V[j].val<<", "<<sextus.S[j].val<<")"
-            //         <<", STRESS: "<<sextus.stress[j]
-            //         <<endl;
-            //     }
-            // }
-            sextus.step();
-            if (sextus.n>120) {
-                return 0;
+            if (i%50000==0){
+                cout<<"TICK "<<i<<endl;
+                for (int j=0;j<sextus.n;j++){
+                    cout<<"NODE "<<j+1
+                    <<", A_MAG: "<<mag(sextus.a, j*sextus.d*sextus.r, sextus.d*sextus.r)
+                    <<", B_MAG: "<<mag(sextus.b, j*sextus.d*sextus.r, sextus.d*sextus.r)
+                    <<", U: "<<sextus.u[j]
+                    <<", energy: "<<sextus.e[j]
+                    <<", EVS: ("<<sextus.E[j].val<<", "<<sextus.V[j].val<<", "<<sextus.S[j].val<<")"
+                    <<", STRESS: "<<sextus.stress[j]
+                    <<endl;
+                }
             }
-            //cout<<"NODES EVS:"<<endl;
-            // int tot=0;
-            // for (int j=0;j<sextus.n;j++){
-            //     //cout<<"NODE "<<j+1<<": "<<endl;
-            //     //cout<<"E="<<setprecision(5)<<sextus.E[j].val<<"; V="<<setprecision(5)<<sextus.V[j].val<<"; S="<<setprecision(5)<<sextus.S[j].val<<"; energy="<<setprecision(5)<<sextus.e[j]<<"; uncertainty="<<setprecision(5)<<sextus.u[j]<<"; a_mag="<<setprecision(5)<<mag(sextus.a, j*d*r, d*r)<<"; b_mag="<<setprecision(5)<<mag(sextus.b, j*d*r, d*r)<<endl;
-            //     if (sextus.e[j]==0.0f) tot++;
-            // }
-            // if (tot==sextus.n-input_nodes.size()) {
-            //     cout<<"DEATH "<<num<<": "<<i<<endl;
-            //     died++;
-            //     avgdeath+=i;
-            //     break;
-            // }
-            // if (i==99999) {
-            //     lived++;
-            //     avgdeath+=100000;
-            // }
+            sextus.step();
+            int tot=0;
+            for (int j=0;j<sextus.n;j++){
+                if (sextus.e[j]==0.0f) tot++;
+            }
+            if (tot==sextus.n-input_nodes.size()) {
+                cout<<"DEATH "<<num<<": "<<i<<endl;
+                died++;
+                avgdeath+=i;
+                break;
+            }
+            if (i==99999) {
+                lived++;
+                avgdeath+=100000;
+            }
         }
-        cout<<"success with "<<sextus.n<<" nodes"<<endl;
-        return 1;
     }
-    // cout<<"LIVED: "<<lived<<endl;
-    // cout<<"DIED: "<<died<<endl;
-    // cout<<"AVERAGE SPAN: "<<avgdeath/10<<endl;
+    cout<<"LIVED: "<<lived<<endl;
+    cout<<"DIED: "<<died<<endl;
+    cout<<"AVERAGE SPAN: "<<avgdeath/10<<endl;
 }
 int main(){
     for (auto xx:input_nodes){
         un_input[xx]=true;
     }
     vector<string> experiments{"lorenz", "sin", "brownian", "rossler", "fourier", "o-u", "constant"};
-    // for (auto curtp:experiments){
-    //     run_exp(curtp);
-    // }
-    float lo=0.5f;
-    float hi=10.0f;
-    float eps=0.00001f;
-    while (hi-lo>eps) {
-        float mid=(lo+hi)/2;
-        mitosis_threshold=mid;
-        cout<<"testing tau: "<<mitosis_threshold<<endl;
-        if (run_exp("o-u", 1)){
-            hi=mid;
-        } else {
-            lo=mid;
-        }
+    for (auto curtp:experiments){
+        run_exp(curtp, 10);
     }
-    cout<<"TAU: "<<lo<<endl;
     return 0;
 }
 /*
