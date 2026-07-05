@@ -23,7 +23,7 @@ float starting_energy=50.0f;
 float delta_clamp=0.25f;
 float phi=1.618033988749895;
 float tanh_mag=10.0f;
-float mitosis_threshold=0.65; //tau
+float mitosis_threshold=0.85; //tau
 float death_energy=40.0f; //omega
 void matvec(const vector<float>& a, const vector<float>& b, vector<float>& c, int n, int m, int idx1, int idx2){
     cblas_sgemv(CblasRowMajor, CblasNoTrans, n, m, 1.0f, a.data()+(idx1*n*m), m, b.data()+(idx2*m), 1, 0.0f, c.data(), 1);
@@ -50,7 +50,7 @@ struct genes{ //"all roads lead to darwinism"
     float dh_par_contrib;
     float fast_adaptation_rate;
     float slow_adaptation_learning_rate_a;
-    float slow_adaptation_learning_rate_b; //a bit larger due to it's reception of error requiring more volatile shift
+    float slow_adaptation_learning_rate_b;
     float h_decay;
     float e_decay;
     float cost_of_thought;
@@ -475,7 +475,7 @@ class lupus{
                 matvec(b, emitted_signal_chl, received_signal_chl, d, r, i, 0);
                 for (auto chl:adj[i]){
                     for (int j=0;j<d;j++){
-                        received_signal_chl[j]+=dna[i].raw_signal_chl*err[chl*d+j]/(1.0f+u[chl]);
+                        received_signal_chl[j]+=dna[i].raw_signal_chl*err[chl*d+j]*u[chl]/(1.0f+u[chl]);
                     }
                 }
                 for (int j=0;j<d;j++){
@@ -489,8 +489,7 @@ class lupus{
                 for (int j=0;j<d;j++){
                     if (input[i]) continue;
                     float fast_adapt=dna[i].fast_adaptation_rate*(dna[i].dh_par_contrib*nerr[i*d+j]-dna[i].dh_chl_contrib*received_signal_chl[j]);
-                    float energy_noise=gaussian_noise(0.0f,1.0f/(max(0.0f,e[i])+0.1f));
-                    dh[i*d+j]=dt*(fast_adapt-dna[i].h_decay*h[i*d+j]+energy_noise);
+                    dh[i*d+j]=dt*(fast_adapt-dna[i].h_decay*h[i*d+j]);
                     nh[i*d+j]=tanh_mag*tanhf((nh[i*d+j]+dh[i*d+j])/tanh_mag);
                 }
                 nu[i]+=dt*((surprise/(2*d))-u[i]); //uncertainty is a moving average of surprise
@@ -644,8 +643,9 @@ void run_exp(string curtp, int tot_num) {
                 sextus.h[xx*sextus.d+1]=cury/5.0f;
                 sextus.h[xx*sextus.d+2]=curz/5.0f;
             }
-            if (i%50000==0){
+            if (i%20000==0){
                 cout<<"TICK "<<i<<endl;
+                cout<<"N: "<<sextus.n<<endl;
                 for (int j=0;j<sextus.n;j++){
                     cout<<"NODE "<<j+1
                     <<", A_MAG: "<<mag(sextus.a, j*sextus.d*sextus.r, sextus.d*sextus.r)
@@ -660,7 +660,7 @@ void run_exp(string curtp, int tot_num) {
             sextus.step();
             int tot=0;
             for (int j=0;j<sextus.n;j++){
-                if (sextus.e[j]==0.0f) tot++;
+                if (sextus.e[j]<death_energy) tot++;
             }
             if (tot==sextus.n-input_nodes.size()) {
                 cout<<"DEATH "<<num<<": "<<i<<endl;
@@ -676,7 +676,7 @@ void run_exp(string curtp, int tot_num) {
     }
     cout<<"LIVED: "<<lived<<endl;
     cout<<"DIED: "<<died<<endl;
-    cout<<"AVERAGE SPAN: "<<avgdeath/10<<endl;
+    cout<<"AVERAGE SPAN: "<<avgdeath/tot_num<<endl;
 }
 int main(){
     for (auto xx:input_nodes){
@@ -684,7 +684,7 @@ int main(){
     }
     vector<string> experiments{"lorenz", "sin", "brownian", "rossler", "fourier", "o-u", "constant"};
     for (auto curtp:experiments){
-        run_exp(curtp, 10);
+        run_exp(curtp, 2);
     }
     return 0;
 }
