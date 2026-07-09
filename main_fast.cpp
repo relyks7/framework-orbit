@@ -28,11 +28,14 @@ float death_energy=40.0f; //omega
 void matvec(const vector<float>& a, const vector<float>& b, vector<float>& c, int n, int m, int idx1, int idx2){
     cblas_sgemv(CblasRowMajor, CblasNoTrans, n, m, 1.0f, a.data()+(idx1*n*m), m, b.data()+(idx2*m), 1, 0.0f, c.data(), 1);
 }
+void matvec_transpose(const vector<float>& a, const vector<float>& b, vector<float>& c, int n, int m, int idx1, int idx2){
+    cblas_sgemv(CblasRowMajor, CblasTrans, n, m, 1.0f, a.data()+(idx1*n*m), m, b.data()+(idx2*n), 1, 0.0f, c.data(), 1);
+}
 void matmat(const vector<float>& a, const vector<float>& b, vector<float>& c, int n, int m, int p, int idx1, int idx2){
     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, n, p, m, 1.0f, a.data()+(idx1*n*m), m, b.data()+(idx2*m*p), p, 0.0f, c.data(), p);
 }
-void matvec_transpose(const vector<float>& a, const vector<float>& b, vector<float>& c, int n, int m, int idx1, int idx2){
-    cblas_sgemv(CblasRowMajor, CblasTrans, n, m, 1.0f, a.data()+(idx1*n*m), m, b.data()+(idx2*n), 1, 0.0f, c.data(), 1);
+void matmat_transpose(const vector<float>& a, const vector<float>& b, vector<float>& c, int n, int m, int p, int idx1, int idx2){
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, n, p, m, 1.0f, a.data()+(idx1*n*m), m, b.data()+(idx2*p*m), m, 0.0f, c.data(), p);
 }
 float mag(const vector<float>&a, int start_idx, int size){
     return cblas_sdot(size, a.data()+start_idx, 1, a.data()+start_idx, 1)/size;
@@ -120,6 +123,7 @@ class lupus{
         vector<float> emitted_signal_chl;
         vector<float> chl_signal;
         vector<float> received_signal_chl;
+        vector<float> scratch;
         vector<genes> dna;
         vector<trait> E;
         vector<trait> V;
@@ -152,6 +156,7 @@ class lupus{
             chl_signal.assign(r, 0.0f);
             emitted_signal_chl.assign(r, 0.0f);
             received_signal_chl.assign(d, 0.0f);
+            scratch.assign(d*d, 0.0f);
             cticks=icticks;
             E.assign(n, initE);
             V.assign(n, initV);
@@ -413,6 +418,7 @@ class lupus{
             chl_signal.assign(r, 0.0f);
             emitted_signal_chl.assign(r, 0.0f);
             received_signal_chl.assign(d, 0.0f);
+            scratch.assign(d*d, 0.0f);
             ticks=0;
             E.assign(n, iE);
             V.assign(n, iV);
@@ -553,6 +559,24 @@ class lupus{
         void step(){
             update(1);
             //NOTA BENE: STEP SET TO ONE UPDATE FOR NOW FOR TESTING PURPOSES. SUCCESS LIKELY IMPROVES IF THIS IS HIGHER.
+        }
+        vector<float> predict(){ //assumes input node is 0
+            matmat_transpose(b, a, scratch, d, r, d, 0, 1);
+            vector<float> scratch_copy=scratch;
+            for (int i=0;i<d;i++) scratch_copy[i*d+i]+=dna[1].raw_signal_par;
+            vector<float> target(d,0); for (int i=0;i<d;i++) target[i]=atanhf(h[1*d+i]/tanh_mag)*tanh_mag;
+            vector<float> s(d);
+            float eps=1e-5f;
+            int rank; int info; float opt_work; int opt_iwork; int lwork_q=-1; int nrhs=1;
+            sgelsd_(&d, &d, &nrhs, scratch_copy.data(), &d, target.data(), &d, s.data(), &eps, &rank, &opt_work, &lwork_q, &opt_iwork, &info);
+            int lwork=(int)opt_work;
+            vector<float> work(lwork);
+            vector<int> iwork(opt_iwork);
+            sgelsd_(&d, &d, &nrhs, scratch_copy.data(), &d, target.data(), &d, s.data(), &eps, &rank, work.data(), &lwork, iwork.data(), &info);
+            if (info!=0) cout<<"error in predict (sgelsd_), info: "<<info<<'\n';
+            //here we just ignore the nonlinearity on the inside, it's close enough to linear and can be changed
+            for (int i=0;i<d;i++) target[i]=target[i]*(1.0f+u[0]);
+            return target;
         }
     };
 vector<bool> un_input(2, false); //input mask
