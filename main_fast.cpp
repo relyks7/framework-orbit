@@ -23,7 +23,7 @@ float starting_energy=50.0f;
 float delta_clamp=0.25f;
 float phi=1.618033988749895;
 float tanh_mag=10.0f;
-float mitosis_threshold=0.15f; //tau
+float mitosis_threshold=100.10f; //tau
 float death_energy=40.0f; //omega
 void matvec(const vector<float>& a, const vector<float>& b, vector<float>& c, int n, int m, int idx1, int idx2){
     cblas_sgemv(CblasRowMajor, CblasNoTrans, n, m, 1.0f, a.data()+(idx1*n*m), m, b.data()+(idx2*m), 1, 0.0f, c.data(), 1);
@@ -259,6 +259,13 @@ class lupus{
             n=cnt;
         }
         void mitosis (int i){ //no, kris did not mitose
+            cout<<"BEFORE MITOSIS, ORGANISM TICK: "<<ticks
+            <<", NODE: "<<i
+            <<", E: "<<e[i]
+            <<", STRESS: "<<stress[i]
+            <<", U: "<<u[i]
+            <<", EVS: ("<<E[i].val<<", "<<V[i].val<<", "<<S[i].val<<")"
+            <<endl;
             vector<float> cov(d*d);
             for (int j=0;j<d*d;j++) cov[j]=err_cov[i*d*d+j];
             vector<float> eigenvals(d,0.0f);
@@ -369,8 +376,8 @@ class lupus{
                 dna[i].a_decay=0.005f*V[i].val*(1.0f-S[i].val);
                 dna[i].b_decay=0.005f*V[i].val*(1.0f-S[i].val);
                 dna[i].fast_adaptation_rate=10.0f*E[i].val*(0.8f*V[i].val+0.2f*(1-S[i].val));
-                dna[i].slow_adaptation_learning_rate_a=0.25f*V[i].val*(0.8f*E[i].val+0.2f*(1-S[i].val));
-                dna[i].slow_adaptation_learning_rate_b=0.25f*V[i].val*(0.8f*E[i].val+0.2f*(1-S[i].val));
+                dna[i].slow_adaptation_learning_rate_a=0.0f*V[i].val*(0.8f*E[i].val+0.2f*(1-S[i].val));
+                dna[i].slow_adaptation_learning_rate_b=0.0f*V[i].val*(0.8f*E[i].val+0.2f*(1-S[i].val));
                 dna[i].h_decay=0.005f*V[i].val*(1-S[i].val);
                 dna[i].stress_decay=0.001f+0.004f*S[i].val;
             }
@@ -517,13 +524,6 @@ class lupus{
             int tempn=n;
             for (int i=0;i<tempn;i++){
                 if (!input[i] && stress[i]>mitosis_threshold && e[i]>death_energy){
-                    cout<<"BEFORE MITOSIS, ORGANISM TICK: "<<ticks
-                    <<", NODE: "<<i
-                    <<", E: "<<e[i]
-                    <<", STRESS: "<<stress[i]
-                    <<", U: "<<u[i]
-                    <<", EVS: ("<<E[i].val<<", "<<V[i].val<<", "<<S[i].val<<")"
-                    <<endl;
                     mitosis(i);
                 }
             }
@@ -622,11 +622,15 @@ void update_data(float &x, float &y, float &z, int i, string tp) {
     }
 }
 vector<int> input_nodes{0};
-void run_exp(string curtp, int tot_num) {
+void run_exp(string curtp, int tot_num, int eval_start, int eval_end) {
     cout<<"RUNNING EXPERIMENT "<<curtp<<endl;
     int lived=0;
     int died=0;
     int avgdeath=0;
+    float f_mse=0.0f;
+    float f_skill=0.0f;
+    float f_cos=0.0f;
+    float f_amp=0.0f;
     for (int num=1;num<=tot_num;num++){
         float curx=0.05f, cury=0.1f, curz=-0.025f;
         trait iE{0.35f, 0.35f, 0.02f, 0.02f, 0.05f, 0.003f};
@@ -634,7 +638,12 @@ void run_exp(string curtp, int tot_num) {
         trait iS{0.35f, 0.35f, 0.03f, 0.03f, 0.08f, 0.002f};
         lupus sextus(iE, iV, iS, un_input, 100);
         sextus.reset();
+        float avg_mse=0.0f;
+        float avg_skill=0.0f;
+        float avg_cos=0.0f;
+        float avg_amp=0.0f;
         for (int i=0;i<100000;i++){
+            if (i==25000) sextus.mitosis(1);
             //cout<<"STEP NUMBER: "<<i+1<<endl;
             update_data(curx, cury, curz, i, curtp);
             //cout<<"POS AT: "<<curx<<", "<<cury<<", "<<curz<<endl;
@@ -643,17 +652,17 @@ void run_exp(string curtp, int tot_num) {
                 sextus.h[xx*sextus.d+1]=cury/5.0f;
                 sextus.h[xx*sextus.d+2]=curz/5.0f;
             }
-            vector<float> pred;
-            if (i%1000==0){
-                cout<<"TICK: "<<i<<'\n';
-                cout<<"[BEFORE STEP]: \n";
-                cout<<"N: "<<sextus.n<<'\n';
-                cout<<"NODE 0 U: "<<sextus.u[0]<<'\n';
-                cout<<"NODE 1 U: "<<sextus.u[1]<<'\n';
-                pred=sextus.pred_h;
-                cout<<"prediction=("<<pred[0]<<", "<<pred[1]<<", "<<pred[2]<<", "<<pred[3]<<")\n";
-                cout<<"NODE 1 H: ("<<sextus.h[1*sextus.d+0]<<", "<<sextus.h[1*sextus.d+1]<<", "<<sextus.h[1*sextus.d+2]<<", "<<sextus.h[1*sextus.d+3]<<")\n";
-            }
+            vector<float> pred=sextus.pred_h;
+            // if (i%10000==0){
+            //     cout<<"TICK: "<<i<<'\n';
+            //     cout<<"[BEFORE STEP]: \n";
+            //     cout<<"N: "<<sextus.n<<'\n';
+            //     cout<<"NODE 0 U: "<<sextus.u[0]<<'\n';
+            //     cout<<"NODE 1 U: "<<sextus.u[1]<<'\n';
+            //     pred=sextus.pred_h;
+            //     cout<<"prediction=("<<pred[0]<<", "<<pred[1]<<", "<<pred[2]<<", "<<pred[3]<<")\n";
+            //     cout<<"NODE 1 H: ("<<sextus.h[1*sextus.d+0]<<", "<<sextus.h[1*sextus.d+1]<<", "<<sextus.h[1*sextus.d+2]<<", "<<sextus.h[1*sextus.d+3]<<")\n";
+            // }
             // if (i%20000==0){
             //     cout<<"TICK "<<i<<endl;
             //     cout<<"N: "<<sextus.n<<endl;
@@ -669,26 +678,32 @@ void run_exp(string curtp, int tot_num) {
             //     }
             // }
             sextus.step();
-            if (i%1000==0){
-                cout<<"[PREDICTION STATS]: \n";
-                vector<float> tgt={curx/5.0f, cury/5.0f, curz/5.0f, 0.0f};
-                float mse=0.0f;
-                float dot=0.0f;
-                float pred_norm=sextus.d*mag(pred, 0, sextus.d);
-                float tgt_norm=sextus.d*mag(tgt, 0, sextus.d);
-                for (int j=0;j<sextus.d;j++){
-                    float pred_err=tgt[j]-pred[j];
-                    mse+=(pred_err*pred_err)/sextus.d;
-                    dot+=pred[j]*tgt[j];
-                }
-                float cos_sim=dot/sqrtf(max(pred_norm*tgt_norm, 1e-7f));
-                float amp=sqrtf(pred_norm/tgt_norm);
-                float skill=1-mse/(tgt_norm/sextus.d);
-                cout<<"MSE: "<<mse
-                <<"\nSKILL: "<<skill
-                <<"\nCOS SIMILARITY: "<<cos_sim
-                <<"\nAMP: "<<amp<<"\n";
+            vector<float> tgt={curx/5.0f, cury/5.0f, curz/5.0f, 0.0f};
+            float mse=0.0f;
+            float dot=0.0f;
+            float pred_norm=sextus.d*mag(pred, 0, sextus.d);
+            float tgt_norm=sextus.d*mag(tgt, 0, sextus.d);
+            for (int j=0;j<sextus.d;j++){
+                float pred_err=tgt[j]-pred[j];
+                mse+=(pred_err*pred_err)/sextus.d;
+                dot+=pred[j]*tgt[j];
             }
+            float cos_sim=dot/sqrtf(max(pred_norm*tgt_norm, 1e-7f));
+            float amp=sqrtf(pred_norm/tgt_norm);
+            float skill=1-mse/(tgt_norm/sextus.d);
+            if (eval_start<=i && i<=eval_end){
+                avg_mse+=mse/(eval_end-eval_start+1);
+                avg_skill+=skill/(eval_end-eval_start+1);
+                avg_cos+=cos_sim/(eval_end-eval_start+1);
+                avg_amp+=amp/(eval_end-eval_start+1);
+            }
+            // if (i%10000==0){
+            //     cout<<"[PREDICTION STATS]: \n";
+            //     cout<<"MSE: "<<mse
+            //     <<"\nSKILL: "<<skill
+            //     <<"\nCOS SIMILARITY: "<<cos_sim
+            //     <<"\nAMP: "<<amp<<"\n";
+            // }
             int tot=0;
             for (int j=0;j<sextus.n;j++){
                 if (sextus.e[j]<death_energy) tot++;
@@ -704,10 +719,24 @@ void run_exp(string curtp, int tot_num) {
                 avgdeath+=100000;
             }
         }
+        cout<<"RUN "<<num<<" AVERAGE STATS FROM "<<eval_start<<" TO "<<eval_end<<": \n";
+        cout<<"MSE: "<<avg_mse
+        <<"\nSKILL: "<<avg_skill
+        <<"\nCOS SIMILARITY: "<<avg_cos
+        <<"\nAMP: "<<avg_amp<<"\n";
+        f_mse+=avg_mse/tot_num;
+        f_skill+=avg_skill/tot_num;
+        f_cos+=avg_cos/tot_num;
+        f_amp+=avg_amp/tot_num;
     }
     cout<<"LIVED: "<<lived<<endl;
     cout<<"DIED: "<<died<<endl;
     cout<<"AVERAGE SPAN: "<<avgdeath/tot_num<<endl;
+    cout<<"OVERALL AVERAGE STATS FROM "<<eval_start<<" TO "<<eval_end<<": \n";
+    cout<<"MSE: "<<f_mse
+    <<"\nSKILL: "<<f_skill
+    <<"\nCOS SIMILARITY: "<<f_cos
+    <<"\nAMP: "<<f_amp<<"\n";
 }
 int main(){
     for (auto xx:input_nodes){
@@ -716,7 +745,7 @@ int main(){
     vector<string> experiments{"lorenz", "sin", "brownian", "rossler", "fourier", "o-u", "constant"};
     experiments={"sin"};
     for (auto curtp:experiments){
-        run_exp(curtp, 1);
+        run_exp(curtp, 30, 50000, 100000);
     }
     return 0;
 }
