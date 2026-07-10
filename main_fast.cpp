@@ -23,7 +23,7 @@ float starting_energy=50.0f;
 float delta_clamp=0.25f;
 float phi=1.618033988749895;
 float tanh_mag=10.0f;
-float mitosis_threshold=0.85; //tau
+float mitosis_threshold=0.15f; //tau
 float death_energy=40.0f; //omega
 void matvec(const vector<float>& a, const vector<float>& b, vector<float>& c, int n, int m, int idx1, int idx2){
     cblas_sgemv(CblasRowMajor, CblasNoTrans, n, m, 1.0f, a.data()+(idx1*n*m), m, b.data()+(idx2*m), 1, 0.0f, c.data(), 1);
@@ -48,7 +48,8 @@ void delta_rule(vector<float> &a, const vector<float>&x, const vector<float>&err
         }
     }
 }
-struct genes{ //"all roads lead to darwinism"
+struct genes{ //"all roads lead to darwinism"...?
+    float surprise_gain;
     float dh_chl_contrib;
     float dh_par_contrib;
     float fast_adaptation_rate;
@@ -124,6 +125,7 @@ class lupus{
         vector<float> chl_signal;
         vector<float> received_signal_chl;
         vector<float> scratch;
+        vector<float> pred_h;
         vector<genes> dna;
         vector<trait> E;
         vector<trait> V;
@@ -151,6 +153,7 @@ class lupus{
             db.assign(n*d*r, 0.0f);
             stress.assign(n, 0.0f);
             par_signal.assign(r, 0.0f);
+            pred_h.assign(d,0);
             emitted_signal_par.assign(r, 0.0f);
             received_signal_par.assign(d, 0.0f);
             chl_signal.assign(r, 0.0f);
@@ -170,7 +173,7 @@ class lupus{
             vector<int> new_index(n,-1);
             int cnt=0;
             for (int i=0;i<n;i++){
-                if (e[i]<=death_energy){
+                if (!input[i] && e[i]<=death_energy){
                     alive[i]=false; 
                     cout<<"NODE "<<i<<" DEAD IN CLEANUP"<<endl;
                     continue;
@@ -297,27 +300,18 @@ class lupus{
                 c2_a[j]=a[i*d*r+j]-c1_a[j];
                 c2_b[j]=b[i*d*r+j]-c1_b[j];
             }
-            //final ordering: c1 takes the place of i, aggregator second last, c2 last
+            //final ordering: c1 takes the place of i, c2 last
             for (int j=0;j<d;j++){
-                h.push_back(h[i*d+j]);
                 h[i*d+j]=c1_h[j];
-                dh.push_back(0.0f);
                 dh[i*d+j]=0.0f;
-                err.push_back(0.0f);
                 err[i*d+j]=0.0f;
-                err_diff.push_back(0.0f);
                 err_diff[i*d+j]=0.0f;
                 for (int k=0;k<d;k++){
-                    err_cov.push_back(0.0f);
                     err_cov[i*d*d+j*d+k]=0.0f;
                 }
                 for (int k=0;k<r;k++){
-                    a.push_back(a[i*d*r+j*r+k]);
-                    b.push_back(b[i*d*r+j*r+k]);
                     a[i*d*r+j*r+k]=c1_a[j*r+k];
                     b[i*d*r+j*r+k]=c1_b[j*r+k];
-                    da.push_back(0.0f);
-                    db.push_back(0.0f);
                     da[i*d*r+j*r+k]=0.0f;
                     db[i*d*r+j*r+k]=0.0f;
                 }
@@ -338,49 +332,36 @@ class lupus{
                 }
             }
             u.push_back(0.0f);
-            u.push_back(0.0f);
             u[i]=0.0f;
             e.push_back(e[i]);
-            e.push_back(e[i]);
-            stress.push_back(0.0f);
             stress.push_back(0.0f);
             stress[i]=0;
             E.push_back(E[i]);
             V.push_back(V[i]);
             S.push_back(S[i]);
-            E.push_back(E[i]);
-            V.push_back(V[i]);
-            S.push_back(S[i]);
-            dna.push_back(dna[i]);
             dna.push_back(dna[i]);
             input.push_back(false);
-            input.push_back(false);
-            adj.push_back({});
             adj.push_back({});
             radj.push_back({});
-            radj.push_back({});
-            n+=2;
+            n++;
             for (auto par:radj[i]){
                 adj[par].insert(n-1);
                 radj[n-1].insert(par);
             }
             for (auto chl:adj[i]){
-                adj[n-2].insert(chl);
-                radj[chl].erase(i);
-                radj[chl].insert(n-2);
+                adj[n-1].insert(chl);
+                radj[chl].insert(n-1);
             }
-            adj[i]={n-2};
-            adj[n-1]={n-2};
-            radj[n-2]={i, n-1};
         }
         void set_dna(){
             for (int i=0;i<n;i++){
-                dna[i].dh_chl_contrib=0.6f;
-                dna[i].dh_par_contrib=1.0f;
+                dna[i].surprise_gain=3.0f;
+                dna[i].dh_chl_contrib=1.0f;
+                dna[i].dh_par_contrib=0.5f;
                 dna[i].cost_of_complexity=0.5f;
                 dna[i].cost_of_thought=0.1f;
                 dna[i].raw_signal_par=0.3f;
-                dna[i].raw_signal_chl=0.3f;
+                dna[i].raw_signal_chl=1.0f;
                 dna[i].e_decay=0.002f;
                 dna[i].correct_income=0.75f;
                 dna[i].stress_grow=0.05f;
@@ -388,8 +369,8 @@ class lupus{
                 dna[i].a_decay=0.005f*V[i].val*(1.0f-S[i].val);
                 dna[i].b_decay=0.005f*V[i].val*(1.0f-S[i].val);
                 dna[i].fast_adaptation_rate=10.0f*E[i].val*(0.8f*V[i].val+0.2f*(1-S[i].val));
-                dna[i].slow_adaptation_learning_rate_a=0.025f*V[i].val*(0.8f*E[i].val+0.2f*(1-S[i].val));
-                dna[i].slow_adaptation_learning_rate_b=0.025f*V[i].val*(0.8f*E[i].val+0.2f*(1-S[i].val));
+                dna[i].slow_adaptation_learning_rate_a=0.25f*V[i].val*(0.8f*E[i].val+0.2f*(1-S[i].val));
+                dna[i].slow_adaptation_learning_rate_b=0.25f*V[i].val*(0.8f*E[i].val+0.2f*(1-S[i].val));
                 dna[i].h_decay=0.005f*V[i].val*(1-S[i].val);
                 dna[i].stress_decay=0.001f+0.004f*S[i].val;
             }
@@ -400,6 +381,7 @@ class lupus{
             if (input.size()>n){
                 input.erase(input.begin()+n, input.end());
             }
+            pred_h.assign(d,0);
             h.assign(n*d, 0.0f);
             dh.assign(n*d, 0.0f);
             e.assign(n, starting_energy);
@@ -434,6 +416,8 @@ class lupus{
             }
             adj[0].insert(1);
             radj[1].insert(0);
+            adj[1].insert(0);
+            radj[0].insert(1);
             set_dna();
         }
         void forward(){
@@ -459,6 +443,7 @@ class lupus{
                 for (int j=0;j<d;j++){
                     received_signal_par[j]=tanh_mag*tanhf(received_signal_par[j]/tanh_mag);
                 }
+                if (i==0) pred_h=received_signal_par;
                 float surprise=0.0f; //surprise=squared sum of error
                 for (int j=0;j<d;j++){
                     nerr[i*d+j]=received_signal_par[j]-h[i*d+j];
@@ -498,23 +483,15 @@ class lupus{
                     dh[i*d+j]=dt*(fast_adapt-dna[i].h_decay*h[i*d+j]);
                     nh[i*d+j]=tanh_mag*tanhf((nh[i*d+j]+dh[i*d+j])/tanh_mag);
                 }
-                nu[i]+=dt*((surprise/(2*d))-u[i]); //uncertainty is a moving average of surprise
+                nu[i]+=dt*(dna[i].surprise_gain*(surprise/(2*d))-u[i]); //uncertainty is a moving average of surprise
                 //move a
                 delta_rule(a, emitted_signal_par, nerr, dna[i].slow_adaptation_learning_rate_a, da, dna[i].a_decay, d, r, i);
                 //move b (hypothesis here - align the errors, invert A=sort of "unify/harmonize" the whole network. success spreads, uncertainty scaling makes failures spread much less)
                 delta_rule(b, emitted_signal_chl, nerr_diff, dna[i].slow_adaptation_learning_rate_b, db, dna[i].b_decay, d, r, i);
-                //update energy
-                if (input[i]){
-                    //it's hard for input nodes to do well, and they provide the only signal source, so they should always be able to emit signal (scaled by e/(1+e) * 1/(1+u))
-                    e[i]=1000.0f;
-                    nu[i]=0.0f;
-                    stress[i]=0.0f;
-                } else{
-                    e[i]+=dt*(dna[i].correct_income*(expf(-20.0f*surprise/(2*d)))-(dna[i].cost_of_thought*mag(dh, i*d, d)+dna[i].cost_of_complexity*(mag(a, i*d*r, d*r)+mag(b, i*d*r, d*r))+dna[i].cost_of_plasticity*(mag(da, i*d*r, d*r)+mag(db, i*d*r, d*r)))-dna[i].e_decay*e[i]);
-                    e[i]=max(0.0f, e[i]);
-                    nu[i]=min(nu[i],10.0f);
-                    stress[i]+=dt*(dna[i].stress_grow*nu[i]-dna[i].stress_decay*stress[i]);
-                }
+                e[i]+=dt*(dna[i].correct_income*(expf(-20.0f*surprise/(2*d)))-(dna[i].cost_of_thought*mag(dh, i*d, d)+dna[i].cost_of_complexity*(mag(a, i*d*r, d*r)+mag(b, i*d*r, d*r))+dna[i].cost_of_plasticity*(mag(da, i*d*r, d*r)+mag(db, i*d*r, d*r)))-dna[i].e_decay*e[i]);
+                e[i]=max(0.0f, e[i]);
+                nu[i]=min(nu[i],10.0f);
+                stress[i]+=dt*(dna[i].stress_grow*nu[i]-dna[i].stress_decay*stress[i]);
             }
             for (int i=0;i<n;i++){
                 /*
@@ -557,31 +534,31 @@ class lupus{
             for (int i=0;i<k;i++) forward();
         }
         void step(){
-            update(1);
+            update(5);
             //NOTA BENE: STEP SET TO ONE UPDATE FOR NOW FOR TESTING PURPOSES. SUCCESS LIKELY IMPROVES IF THIS IS HIGHER.
         }
-        vector<float> predict(){ //assumes input node is 0
-            matmat_transpose(b, a, scratch, d, r, d, 0, 1);
-            vector<float> scratch_copy=scratch;
-            for (int i=0;i<d;i++) scratch_copy[i*d+i]+=dna[1].raw_signal_par;
-            vector<float> target(d,0); for (int i=0;i<d;i++) target[i]=atanhf(h[1*d+i]/tanh_mag)*tanh_mag;
-            vector<float> s(d);
-            float eps=1e-5f;
-            int rank; int info; float opt_work; int opt_iwork; int lwork_q=-1; int nrhs=1;
-            sgelsd_(&d, &d, &nrhs, scratch_copy.data(), &d, target.data(), &d, s.data(), &eps, &rank, &opt_work, &lwork_q, &opt_iwork, &info);
-            int lwork=(int)opt_work;
-            vector<float> work(lwork);
-            vector<int> iwork(opt_iwork);
-            sgelsd_(&d, &d, &nrhs, scratch_copy.data(), &d, target.data(), &d, s.data(), &eps, &rank, work.data(), &lwork, iwork.data(), &info);
-            if (info!=0) cout<<"error in predict (sgelsd_), info: "<<info<<'\n';
-            //here we just ignore the nonlinearity on the inside, it's close enough to linear and can be changed
-            for (int i=0;i<d;i++) target[i]=target[i]*(1.0f+u[0]);
-            return target;
-        }
+        //predict not necessary if something points into 0
+        // vector<float> predict(){ //assumes input node is 0
+        //     matmat_transpose(b, a, scratch, d, r, d, 0, 1);
+        //     vector<float> scratch_copy=scratch;
+        //     for (int i=0;i<d;i++) scratch_copy[i*d+i]+=dna[1].raw_signal_par;
+        //     vector<float> target(d,0); for (int i=0;i<d;i++) target[i]=atanhf(h[1*d+i]/tanh_mag)*tanh_mag;
+        //     vector<float> s(d);
+        //     float eps=1e-5f;
+        //     int rank; int info; float opt_work; int opt_iwork; int lwork_q=-1; int nrhs=1;
+        //     sgelsd_(&d, &d, &nrhs, scratch_copy.data(), &d, target.data(), &d, s.data(), &eps, &rank, &opt_work, &lwork_q, &opt_iwork, &info);
+        //     int lwork=(int)opt_work;
+        //     vector<float> work(lwork);
+        //     vector<int> iwork(opt_iwork);
+        //     sgelsd_(&d, &d, &nrhs, scratch_copy.data(), &d, target.data(), &d, s.data(), &eps, &rank, work.data(), &lwork, iwork.data(), &info);
+        //     if (info!=0) cout<<"error in predict (sgelsd_), info: "<<info<<'\n';
+        //     //here we just ignore the nonlinearity on the inside, it's close enough to linear and can be changed
+        //     for (int i=0;i<d;i++) target[i]=target[i]*(1.0f+u[0]);
+        //     return target;
+        // }
     };
 vector<bool> un_input(2, false); //input mask
 void update_data(float &x, float &y, float &z, int i, string tp) {
-    //NOTA BENE: MOST OF THESE TESTING THINGS WERE WRITTEN BY AI TO MAKE SURE THAT THEY HAD ROUGHLY THE SAME MAGNITUDE, AND ALSO JUST HOW THEY WORK IN THE FIRST PLACE - MEANT FOR A QUICK NULL HYPOTHESIS TEST AND A FEW ABLATION TESTS
     if (tp=="lorenz"){
         //LORENZ
         const float sigma0 = 10.0f;
@@ -595,12 +572,11 @@ void update_data(float &x, float &y, float &z, int i, string tp) {
         z += dz * dt;
     }
     if (tp=="sin"){
-        //SIN
-        float time_now = i * dt; 
-        float freq = 2.0f;
-        x = 20.0f * sinf(time_now * freq); 
-        y = 27.0f * sinf(time_now * freq + 1.57f);
-        z = 25.0f * sinf(time_now * (freq * 1.5f)) + 25.0f;
+        float t = i * dt;
+        float freq = 0.2f;
+        x = 2.0f * sinf(t * freq);
+        y = 2.0f * sinf(t * freq + 1.57f);
+        z = 2.0f * sinf(t * freq * 1.5f);
     }
     if (tp=="brownian"){
         //BROWNIAN
@@ -667,21 +643,52 @@ void run_exp(string curtp, int tot_num) {
                 sextus.h[xx*sextus.d+1]=cury/5.0f;
                 sextus.h[xx*sextus.d+2]=curz/5.0f;
             }
-            if (i%20000==0){
-                cout<<"TICK "<<i<<endl;
-                cout<<"N: "<<sextus.n<<endl;
-                for (int j=0;j<sextus.n;j++){
-                    cout<<"NODE "<<j+1
-                    <<", A_MAG: "<<mag(sextus.a, j*sextus.d*sextus.r, sextus.d*sextus.r)
-                    <<", B_MAG: "<<mag(sextus.b, j*sextus.d*sextus.r, sextus.d*sextus.r)
-                    <<", U: "<<sextus.u[j]
-                    <<", energy: "<<sextus.e[j]
-                    <<", EVS: ("<<sextus.E[j].val<<", "<<sextus.V[j].val<<", "<<sextus.S[j].val<<")"
-                    <<", STRESS: "<<sextus.stress[j]
-                    <<endl;
-                }
+            vector<float> pred;
+            if (i%1000==0){
+                cout<<"TICK: "<<i<<'\n';
+                cout<<"[BEFORE STEP]: \n";
+                cout<<"N: "<<sextus.n<<'\n';
+                cout<<"NODE 0 U: "<<sextus.u[0]<<'\n';
+                cout<<"NODE 1 U: "<<sextus.u[1]<<'\n';
+                pred=sextus.pred_h;
+                cout<<"prediction=("<<pred[0]<<", "<<pred[1]<<", "<<pred[2]<<", "<<pred[3]<<")\n";
+                cout<<"NODE 1 H: ("<<sextus.h[1*sextus.d+0]<<", "<<sextus.h[1*sextus.d+1]<<", "<<sextus.h[1*sextus.d+2]<<", "<<sextus.h[1*sextus.d+3]<<")\n";
             }
+            // if (i%20000==0){
+            //     cout<<"TICK "<<i<<endl;
+            //     cout<<"N: "<<sextus.n<<endl;
+            //     for (int j=0;j<sextus.n;j++){
+            //         cout<<"NODE "<<j+1
+            //         <<", A_MAG: "<<mag(sextus.a, j*sextus.d*sextus.r, sextus.d*sextus.r)
+            //         <<", B_MAG: "<<mag(sextus.b, j*sextus.d*sextus.r, sextus.d*sextus.r)
+            //         <<", U: "<<sextus.u[j]
+            //         <<", energy: "<<sextus.e[j]
+            //         <<", EVS: ("<<sextus.E[j].val<<", "<<sextus.V[j].val<<", "<<sextus.S[j].val<<")"
+            //         <<", STRESS: "<<sextus.stress[j]
+            //         <<endl;
+            //     }
+            // }
             sextus.step();
+            if (i%1000==0){
+                cout<<"[PREDICTION STATS]: \n";
+                vector<float> tgt={curx/5.0f, cury/5.0f, curz/5.0f, 0.0f};
+                float mse=0.0f;
+                float dot=0.0f;
+                float pred_norm=sextus.d*mag(pred, 0, sextus.d);
+                float tgt_norm=sextus.d*mag(tgt, 0, sextus.d);
+                for (int j=0;j<sextus.d;j++){
+                    float pred_err=tgt[j]-pred[j];
+                    mse+=(pred_err*pred_err)/sextus.d;
+                    dot+=pred[j]*tgt[j];
+                }
+                float cos_sim=dot/sqrtf(max(pred_norm*tgt_norm, 1e-7f));
+                float amp=sqrtf(pred_norm/tgt_norm);
+                float skill=1-mse/(tgt_norm/sextus.d);
+                cout<<"MSE: "<<mse
+                <<"\nSKILL: "<<skill
+                <<"\nCOS SIMILARITY: "<<cos_sim
+                <<"\nAMP: "<<amp<<"\n";
+            }
             int tot=0;
             for (int j=0;j<sextus.n;j++){
                 if (sextus.e[j]<death_energy) tot++;
@@ -707,8 +714,9 @@ int main(){
         un_input[xx]=true;
     }
     vector<string> experiments{"lorenz", "sin", "brownian", "rossler", "fourier", "o-u", "constant"};
+    experiments={"sin"};
     for (auto curtp:experiments){
-        run_exp(curtp, 2);
+        run_exp(curtp, 1);
     }
     return 0;
 }
