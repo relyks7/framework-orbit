@@ -489,6 +489,13 @@ void update_data(float &x, float &y, float &z, int i, string tp) {
         y=0.7f*sinf(t*1.9f)+0.7f*cosf(t*3.3f)+0.6f*sinf(t*5.7f);
         z=0.7f*sinf(t*1.1f)+0.7f*cosf(t * 2.1f)+0.6f*sinf(t*3.9f);
     }
+    if (tp=="fourier_rev"){
+        //FOURIER, REVERSED
+        float t = (99999-i) * dt;
+        x=0.7f*sinf(t*1.3f)+0.7f*cosf(t*2.7f)+0.6f*sinf(t*4.1f);
+        y=0.7f*sinf(t*1.9f)+0.7f*cosf(t*3.3f)+0.6f*sinf(t*5.7f);
+        z=0.7f*sinf(t*1.1f)+0.7f*cosf(t * 2.1f)+0.6f*sinf(t*3.9f);
+    }
     if (tp=="o-u"){
         //O-U
         float pull_strength = 2.0f;
@@ -507,7 +514,7 @@ void update_data(float &x, float &y, float &z, int i, string tp) {
     }
 }
 vector<int> input_nodes{0};
-void run_exp(string curtp, int tot_num, int eval_start, int eval_end) {
+void run_exp(string curtp, int tot_num, int eval_start, int eval_end, bool do_learning) {
     cout<<"RUNNING EXPERIMENT "<<curtp<<endl;
     int lived=0;
     int died=0;
@@ -520,6 +527,7 @@ void run_exp(string curtp, int tot_num, int eval_start, int eval_end) {
         float curx=0.05f, cury=0.1f, curz=-0.025f;
         lupus sextus(un_input, 100);
         sextus.reset();
+        if (!do_learning) sextus.slow_learn=0.0f;
         float avg_mse=0.0f;
         float avg_skill=0.0f;
         float avg_cos=0.0f;
@@ -621,15 +629,161 @@ void run_exp(string curtp, int tot_num, int eval_start, int eval_end) {
     <<"\nCOS SIMILARITY: "<<f_cos
     <<"\nAMP: "<<f_amp<<"\n";
 }
+void run_special(string tp1, string tp2, int tot_num, int eval_start, int eval_end) {
+    int lived=0;
+    int died=0;
+    int avgdeath=0;
+    float f_mse1=0.0f;
+    float f_skill1=0.0f;
+    float f_cos1=0.0f;
+    float f_amp1=0.0f;
+    float f_mse2=0.0f;
+    float f_skill2=0.0f;
+    float f_cos2=0.0f;
+    float f_amp2=0.0f;
+    for (int num=1;num<=tot_num;num++){
+        float curx=0.05f, cury=0.1f, curz=-0.025f;
+        lupus sextus(un_input, 100);
+        sextus.reset();
+        float avg_mse1=0.0f;
+        float avg_skill1=0.0f;
+        float avg_cos1=0.0f;
+        float avg_amp1=0.0f;
+        float avg_mse2=0.0f;
+        float avg_skill2=0.0f;
+        float avg_cos2=0.0f;
+        float avg_amp2=0.0f;
+        for (int i=0;i<100000*2;i++){
+            //if (i==25000) sextus.mitosis(1);
+            //cout<<"STEP NUMBER: "<<i+1<<endl;
+            if (i>=100000){
+                sextus.slow_learn=0.0f;
+                update_data(curx, cury, curz, i-100000, tp2);
+            } else{
+                update_data(curx, cury, curz, i, tp1);
+            }
+            //cout<<"POS AT: "<<curx<<", "<<cury<<", "<<curz<<endl;
+            for (auto xx:input_nodes){
+                sextus.h[xx*sextus.d+0]=curx/5.0f;
+                sextus.h[xx*sextus.d+1]=cury/5.0f;
+                sextus.h[xx*sextus.d+2]=curz/5.0f;
+            }
+            vector<float> pred=sextus.pred_h;
+            
+            // if (i%10000==0){
+            //     cout<<"TICK: "<<i<<'\n';
+            //     cout<<"[BEFORE STEP]: \n";
+            //     cout<<"N: "<<sextus.n<<'\n';
+            //     cout<<"NODE 0 U: "<<sextus.u[0]<<'\n';
+            //     cout<<"NODE 1 U: "<<sextus.u[1]<<'\n';
+            //     pred=sextus.pred_h;
+            //     cout<<"prediction=("<<pred[0]<<", "<<pred[1]<<", "<<pred[2]<<", "<<pred[3]<<")\n";
+            //     cout<<"NODE 1 H: ("<<sextus.h[1*sextus.d+0]<<", "<<sextus.h[1*sextus.d+1]<<", "<<sextus.h[1*sextus.d+2]<<", "<<sextus.h[1*sextus.d+3]<<")\n";
+            // }
+            // if (i%20000==0){
+            //     cout<<"TICK "<<i<<endl;
+            //     cout<<"N: "<<sextus.n<<endl;
+            //     for (int j=0;j<sextus.n;j++){
+            //         cout<<"NODE "<<j+1
+            //         <<", A_MAG: "<<mag(sextus.a, j*sextus.d*sextus.r, sextus.d*sextus.r)
+            //         <<", B_MAG: "<<mag(sextus.b, j*sextus.d*sextus.r, sextus.d*sextus.r)
+            //         <<", U: "<<sextus.u[j]
+            //         <<", energy: "<<sextus.e[j]
+            //         <<", EVS: ("<<sextus.E[j].val<<", "<<sextus.V[j].val<<", "<<sextus.S[j].val<<")"
+            //         <<", STRESS: "<<sextus.stress[j]
+            //         <<endl;
+            //     }
+            // }
+            sextus.step();
+            vector<float> tgt={curx/5.0f, cury/5.0f, curz/5.0f, 0.0f};
+            float mse=0.0f;
+            float dot=0.0f;
+            float pred_norm=mag(pred, 0, sextus.d);
+            float tgt_norm=mag(tgt, 0, sextus.d);
+            for (int j=0;j<sextus.d;j++){
+                float pred_err=tgt[j]-pred[j];
+                mse+=(pred_err*pred_err)/sextus.d;
+                dot+=pred[j]*tgt[j];
+            }
+            float cos_sim=dot/sqrtf(max(pred_norm*tgt_norm, 1e-7f));
+            float amp=sqrtf(pred_norm/tgt_norm);
+            float skill=1-mse/(tgt_norm/sextus.d);
+            if (eval_start<=i && i<=eval_end){
+                avg_mse1+=mse/(eval_end-eval_start+1);
+                avg_skill1+=skill/(eval_end-eval_start+1);
+                avg_cos1+=cos_sim/(eval_end-eval_start+1);
+                avg_amp1+=amp/(eval_end-eval_start+1);
+            }
+            if (eval_start<=i-100000 && i-100000<=eval_end){
+                avg_mse2+=mse/(eval_end-eval_start+1);
+                avg_skill2+=skill/(eval_end-eval_start+1);
+                avg_cos2+=cos_sim/(eval_end-eval_start+1);
+                avg_amp2+=amp/(eval_end-eval_start+1);
+            }
+            // if (i%10000==0){
+            //     cout<<"[PREDICTION STATS]: \n";
+            //     cout<<"MSE: "<<mse
+            //     <<"\nSKILL: "<<skill
+            //     <<"\nCOS SIMILARITY: "<<cos_sim
+            //     <<"\nAMP: "<<amp<<"\n";
+            // }
+            int tot=0;
+            for (int j=0;j<sextus.n;j++){
+                if (!sextus.input[j] && sextus.u[j]>sextus.omega) tot++;
+            }
+            if (tot==sextus.n-input_nodes.size()) {
+                cout<<"DEATH "<<num<<": "<<i<<endl;
+                died++;
+                avgdeath+=i;
+                break;
+            }
+            if (i==99999) {
+                lived++;
+                avgdeath+=100000;
+            }
+        }
+        cout<<"RUN "<<num<<" AVERAGE STATS FROM "<<eval_start<<" TO "<<eval_end<<": \n";
+        cout<<"MSE 1: "<<avg_mse1
+        <<"\nSKILL 1: "<<avg_skill1
+        <<"\nCOS SIMILARITY 1: "<<avg_cos1
+        <<"\nAMP 1: "<<avg_amp1<<"\n";
+        cout<<"MSE 2: "<<avg_mse2
+        <<"\nSKILL 2: "<<avg_skill2
+        <<"\nCOS SIMILARITY 2: "<<avg_cos2
+        <<"\nAMP 2: "<<avg_amp2<<"\n";
+        f_mse1+=avg_mse1/tot_num;
+        f_skill1+=avg_skill1/tot_num;
+        f_cos1+=avg_cos1/tot_num;
+        f_amp1+=avg_amp1/tot_num;
+        f_mse2+=avg_mse2/tot_num;
+        f_skill2+=avg_skill2/tot_num;
+        f_cos2+=avg_cos2/tot_num;
+        f_amp2+=avg_amp2/tot_num;
+    }
+    cout<<"LIVED: "<<lived<<endl;
+    cout<<"DIED: "<<died<<endl;
+    cout<<"AVERAGE SPAN: "<<avgdeath/tot_num<<endl;
+    cout<<"OVERALL AVERAGE STATS FROM "<<eval_start<<" TO "<<eval_end<<": \n";
+    cout<<"MSE 1: "<<f_mse1
+    <<"\nSKILL1: "<<f_skill1
+    <<"\nCOS SIMILARITY 1: "<<f_cos1
+    <<"\nAMP 1: "<<f_amp1<<"\n";
+    cout<<"MSE 2: "<<f_mse2
+    <<"\nSKILL2: "<<f_skill2
+    <<"\nCOS SIMILARITY 2: "<<f_cos2
+    <<"\nAMP 2: "<<f_amp2<<"\n";
+}
+
 int main(){
     for (auto xx:input_nodes){
         un_input[xx]=true;
     }
     vector<string> experiments{"lorenz", "sin", "brownian", "rossler", "fourier", "o-u", "constant"};
-    experiments={"fourier"};
-    for (auto curtp:experiments){
-        run_exp(curtp, 20, 50000, 100000);
-    }
+    //experiments={"fourier"};
+    //for (auto curtp:experiments){
+    //    run_exp(curtp, 20, 50000, 100000);
+    //}
+    run_special("fourier", "fourier_rev", 20, 50000, 100000);
     return 0;
 }
 /*
