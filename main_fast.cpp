@@ -12,6 +12,7 @@ using namespace std;
 #define all(v) v.begin(), v.end()
 using ll=long long;
 int INF=0x3f3f3f3f;
+float SENTINEL=-0.1225711;
 thread_local mt19937 rng(hash<thread::id>{}(this_thread::get_id())^random_device{}());
 float gaussian_noise(float mean, float stddev){
     normal_distribution<float> dist(mean, stddev);
@@ -47,13 +48,13 @@ class lupus{
     //0 is prior, 1 is eyes, 2 is motor
     public:
         vector<unordered_set<int>> adj;
-        vector<bool> input;
+        vector<bool> input; vector<bool> motor;
         vector<unordered_set<int>> radj;
         vector<float> h; //internal state
         vector<float> dh;
         vector<float> err; //error
         vector<float> err_diff;
-        vector<float> err_cov; //error covariance matrix
+        vector<float> err_cov; //error matrix (uncentered second moment, not covariance)
         vector<float> u; //free energy
         vector<float> a; //receptors
         vector<float> da;
@@ -68,6 +69,7 @@ class lupus{
         vector<float> chl_signal;
         vector<float> received_signal_chl;
         vector<float> pred_h;
+        vector<float> setpoints;
         int ticks=0;
         int cticks;
         int n=2;
@@ -77,8 +79,8 @@ class lupus{
         float slow_learn;
         float tau;
         float omega;
-        lupus(const vector<bool>& uinput, int icticks){
-            adj.assign(n,unordered_set<int>{}); radj.assign(n,unordered_set<int>{}); input=uinput;
+        lupus(const vector<bool>& uinput, const vector<bool>& umotor, int icticks, vector<float> isetpoints){
+            adj.assign(n,unordered_set<int>{}); radj.assign(n,unordered_set<int>{}); input=uinput; motor=umotor;
             h.assign(n*d, 0.0f);
             dh.assign(n*d, 0.0f);
             err.assign(n*d, 0.0f);
@@ -97,6 +99,7 @@ class lupus{
             emitted_signal_chl.assign(r, 0.0f);
             received_signal_chl.assign(d, 0.0f);
             cticks=icticks;
+            setpoints=isetpoints;
             fast_learn=1.0f; slow_learn=0.02f;
             tau=0.12f; omega=0.25f;
         }
@@ -105,7 +108,7 @@ class lupus{
             vector<int> new_index(n,-1);
             int cnt=0;
             for (int i=0;i<n;i++){
-                if (!input[i] && u[i]>omega){
+                if (!input[i] && !motor[i] && u[i]>omega){
                     alive[i]=false; 
                     cout<<"NODE "<<i<<" DEAD IN CLEANUP"<<endl;
                     continue;
@@ -122,13 +125,17 @@ class lupus{
             vector<float> nb{};
             vector<float> ndb{};
             vector<float> nerr_cov{};
+            vector<float> nsetpoints{};
             vector<bool> ninput;
+            vector<bool> nmotor;
             for (int i=0;i<n;i++){
                 if (alive[i]){
                     ninput.push_back(input[i]);
+                    nmotor.push_back(motor[i]);
                     nu.push_back(u[i]);
                     for (int j=0;j<d;j++){
                         nh.push_back(h[i*d+j]);
+                        nsetpoints.push_back(setpoints[i*d+j]);
                         ndh.push_back(dh[i*d+j]);
                         nerr.push_back(err[i*d+j]);
                         nerr_diff.push_back(err_diff[i*d+j]);
@@ -145,6 +152,7 @@ class lupus{
                 }
             }
             swap(h, nh);
+            swap(setpoints, nsetpoints);
             swap(dh, ndh);
             swap(err, nerr);
             swap(err_diff, nerr_diff);
@@ -155,6 +163,7 @@ class lupus{
             swap(db, ndb);
             swap(err_cov, nerr_cov);
             swap(input, ninput);
+            swap(motor, nmotor);
             vector<unordered_set<int>> nadj{};
             vector<unordered_set<int>> nradj{};
             for (int i=0;i<n;i++){
@@ -237,6 +246,7 @@ class lupus{
             for (int j=0;j<d;j++){
                 h.push_back(h[i*d+j]);
                 h[i*d+j]=c1_h[j];
+                setpoints.push_back(setpoints[i*d+j]);
                 dh.push_back(0.0f);
                 dh[i*d+j]=0.0f;
                 err.push_back(0.0f);
@@ -260,6 +270,7 @@ class lupus{
             }
             for (int j=0;j<d;j++){
                 h.push_back(c2_h[j]);
+                setpoints.push_back(setpoints[i*d+j]);
                 dh.push_back(0.0f);
                 err.push_back(0.0f);
                 err_diff.push_back(0.0f);
@@ -278,6 +289,8 @@ class lupus{
             u[i]=0.0f;
             input.push_back(false);
             input.push_back(false);
+            motor.push_back(false);
+            motor.push_back(false);
             adj.push_back({});
             adj.push_back({});
             radj.push_back({});
@@ -333,6 +346,9 @@ class lupus{
             adj[1].insert(0);
             radj[0].insert(1);
             radj[1].insert(0);
+
+            adj[1].insert(2);
+            radj[2].insert(1);
             // adj[0].insert(1);
             // adj[0].insert(2);
             // adj[1].insert(3);
@@ -366,6 +382,7 @@ class lupus{
                 float surprise=0.0f; //surprise=squared sum of error
                 for (int j=0;j<d;j++){
                     nerr[i*d+j]=received_signal_par[j]-h[i*d+j];
+                    if (setpoints[i*d+j]!=SENTINEL) nerr[i*d+j]+=setpoints[i*d+j]-h[i*d+j];
                     surprise+=nerr[i*d+j]*nerr[i*d+j];
                 }
                 //error covariance matrix
@@ -408,7 +425,7 @@ class lupus{
             swap(err_diff, nerr_diff);
             int tempn=n;
             for (int i=0;i<tempn;i++){
-                if (!input[i] && u[i]<omega && u[i]>tau){
+                if (!input[i] && !motor[i] && u[i]<omega && u[i]>tau){
                     mitosis(i);
                 }
             }
@@ -441,7 +458,6 @@ class lupus{
         //     return target;
         // }
     };
-vector<bool> un_input(2, false); //input mask
 void update_data(float &x, float &y, float &z, int i, string tp) {
     //some of these were written with ai
     if (tp=="lorenz"){
@@ -514,6 +530,10 @@ void update_data(float &x, float &y, float &z, int i, string tp) {
     }
 }
 vector<int> input_nodes{0};
+vector<int> motor_nodes{2};
+vector<bool> un_input(3, false); //input mask
+vector<bool> un_motor(3, false); //motor mask
+vector<float> un_setpoints(3*4); //setpoint priors
 void run_exp(string curtp, int tot_num, int eval_start, int eval_end, bool do_learning) {
     cout<<"RUNNING EXPERIMENT "<<curtp<<endl;
     int lived=0;
@@ -525,7 +545,7 @@ void run_exp(string curtp, int tot_num, int eval_start, int eval_end, bool do_le
     float f_amp=0.0f;
     for (int num=1;num<=tot_num;num++){
         float curx=0.05f, cury=0.1f, curz=-0.025f;
-        lupus sextus(un_input, 100);
+        lupus sextus(un_input, un_motor, 100, un_setpoints);
         sextus.reset();
         if (!do_learning) sextus.slow_learn=0.0f;
         float avg_mse=0.0f;
@@ -629,161 +649,19 @@ void run_exp(string curtp, int tot_num, int eval_start, int eval_end, bool do_le
     <<"\nCOS SIMILARITY: "<<f_cos
     <<"\nAMP: "<<f_amp<<"\n";
 }
-void run_special(string tp1, string tp2, int tot_num, int eval_start, int eval_end) {
-    int lived=0;
-    int died=0;
-    int avgdeath=0;
-    float f_mse1=0.0f;
-    float f_skill1=0.0f;
-    float f_cos1=0.0f;
-    float f_amp1=0.0f;
-    float f_mse2=0.0f;
-    float f_skill2=0.0f;
-    float f_cos2=0.0f;
-    float f_amp2=0.0f;
-    for (int num=1;num<=tot_num;num++){
-        float curx=0.05f, cury=0.1f, curz=-0.025f;
-        lupus sextus(un_input, 100);
-        sextus.reset();
-        float avg_mse1=0.0f;
-        float avg_skill1=0.0f;
-        float avg_cos1=0.0f;
-        float avg_amp1=0.0f;
-        float avg_mse2=0.0f;
-        float avg_skill2=0.0f;
-        float avg_cos2=0.0f;
-        float avg_amp2=0.0f;
-        for (int i=0;i<100000*2;i++){
-            //if (i==25000) sextus.mitosis(1);
-            //cout<<"STEP NUMBER: "<<i+1<<endl;
-            if (i>=100000){
-                sextus.slow_learn=0.0f;
-                update_data(curx, cury, curz, i-100000, tp2);
-            } else{
-                update_data(curx, cury, curz, i, tp1);
-            }
-            //cout<<"POS AT: "<<curx<<", "<<cury<<", "<<curz<<endl;
-            for (auto xx:input_nodes){
-                sextus.h[xx*sextus.d+0]=curx/5.0f;
-                sextus.h[xx*sextus.d+1]=cury/5.0f;
-                sextus.h[xx*sextus.d+2]=curz/5.0f;
-            }
-            vector<float> pred=sextus.pred_h;
-            
-            // if (i%10000==0){
-            //     cout<<"TICK: "<<i<<'\n';
-            //     cout<<"[BEFORE STEP]: \n";
-            //     cout<<"N: "<<sextus.n<<'\n';
-            //     cout<<"NODE 0 U: "<<sextus.u[0]<<'\n';
-            //     cout<<"NODE 1 U: "<<sextus.u[1]<<'\n';
-            //     pred=sextus.pred_h;
-            //     cout<<"prediction=("<<pred[0]<<", "<<pred[1]<<", "<<pred[2]<<", "<<pred[3]<<")\n";
-            //     cout<<"NODE 1 H: ("<<sextus.h[1*sextus.d+0]<<", "<<sextus.h[1*sextus.d+1]<<", "<<sextus.h[1*sextus.d+2]<<", "<<sextus.h[1*sextus.d+3]<<")\n";
-            // }
-            // if (i%20000==0){
-            //     cout<<"TICK "<<i<<endl;
-            //     cout<<"N: "<<sextus.n<<endl;
-            //     for (int j=0;j<sextus.n;j++){
-            //         cout<<"NODE "<<j+1
-            //         <<", A_MAG: "<<mag(sextus.a, j*sextus.d*sextus.r, sextus.d*sextus.r)
-            //         <<", B_MAG: "<<mag(sextus.b, j*sextus.d*sextus.r, sextus.d*sextus.r)
-            //         <<", U: "<<sextus.u[j]
-            //         <<", energy: "<<sextus.e[j]
-            //         <<", EVS: ("<<sextus.E[j].val<<", "<<sextus.V[j].val<<", "<<sextus.S[j].val<<")"
-            //         <<", STRESS: "<<sextus.stress[j]
-            //         <<endl;
-            //     }
-            // }
-            sextus.step();
-            vector<float> tgt={curx/5.0f, cury/5.0f, curz/5.0f, 0.0f};
-            float mse=0.0f;
-            float dot=0.0f;
-            float pred_norm=mag(pred, 0, sextus.d);
-            float tgt_norm=mag(tgt, 0, sextus.d);
-            for (int j=0;j<sextus.d;j++){
-                float pred_err=tgt[j]-pred[j];
-                mse+=(pred_err*pred_err)/sextus.d;
-                dot+=pred[j]*tgt[j];
-            }
-            float cos_sim=dot/sqrtf(max(pred_norm*tgt_norm, 1e-7f));
-            float amp=sqrtf(pred_norm/tgt_norm);
-            float skill=1-mse/(tgt_norm/sextus.d);
-            if (eval_start<=i && i<=eval_end){
-                avg_mse1+=mse/(eval_end-eval_start+1);
-                avg_skill1+=skill/(eval_end-eval_start+1);
-                avg_cos1+=cos_sim/(eval_end-eval_start+1);
-                avg_amp1+=amp/(eval_end-eval_start+1);
-            }
-            if (eval_start<=i-100000 && i-100000<=eval_end){
-                avg_mse2+=mse/(eval_end-eval_start+1);
-                avg_skill2+=skill/(eval_end-eval_start+1);
-                avg_cos2+=cos_sim/(eval_end-eval_start+1);
-                avg_amp2+=amp/(eval_end-eval_start+1);
-            }
-            // if (i%10000==0){
-            //     cout<<"[PREDICTION STATS]: \n";
-            //     cout<<"MSE: "<<mse
-            //     <<"\nSKILL: "<<skill
-            //     <<"\nCOS SIMILARITY: "<<cos_sim
-            //     <<"\nAMP: "<<amp<<"\n";
-            // }
-            int tot=0;
-            for (int j=0;j<sextus.n;j++){
-                if (!sextus.input[j] && sextus.u[j]>sextus.omega) tot++;
-            }
-            if (tot==sextus.n-input_nodes.size()) {
-                cout<<"DEATH "<<num<<": "<<i<<endl;
-                died++;
-                avgdeath+=i;
-                break;
-            }
-            if (i==99999) {
-                lived++;
-                avgdeath+=100000;
-            }
-        }
-        cout<<"RUN "<<num<<" AVERAGE STATS FROM "<<eval_start<<" TO "<<eval_end<<": \n";
-        cout<<"MSE 1: "<<avg_mse1
-        <<"\nSKILL 1: "<<avg_skill1
-        <<"\nCOS SIMILARITY 1: "<<avg_cos1
-        <<"\nAMP 1: "<<avg_amp1<<"\n";
-        cout<<"MSE 2: "<<avg_mse2
-        <<"\nSKILL 2: "<<avg_skill2
-        <<"\nCOS SIMILARITY 2: "<<avg_cos2
-        <<"\nAMP 2: "<<avg_amp2<<"\n";
-        f_mse1+=avg_mse1/tot_num;
-        f_skill1+=avg_skill1/tot_num;
-        f_cos1+=avg_cos1/tot_num;
-        f_amp1+=avg_amp1/tot_num;
-        f_mse2+=avg_mse2/tot_num;
-        f_skill2+=avg_skill2/tot_num;
-        f_cos2+=avg_cos2/tot_num;
-        f_amp2+=avg_amp2/tot_num;
-    }
-    cout<<"LIVED: "<<lived<<endl;
-    cout<<"DIED: "<<died<<endl;
-    cout<<"AVERAGE SPAN: "<<avgdeath/tot_num<<endl;
-    cout<<"OVERALL AVERAGE STATS FROM "<<eval_start<<" TO "<<eval_end<<": \n";
-    cout<<"MSE 1: "<<f_mse1
-    <<"\nSKILL1: "<<f_skill1
-    <<"\nCOS SIMILARITY 1: "<<f_cos1
-    <<"\nAMP 1: "<<f_amp1<<"\n";
-    cout<<"MSE 2: "<<f_mse2
-    <<"\nSKILL2: "<<f_skill2
-    <<"\nCOS SIMILARITY 2: "<<f_cos2
-    <<"\nAMP 2: "<<f_amp2<<"\n";
-}
-
 int main(){
     for (auto xx:input_nodes){
         un_input[xx]=true;
     }
+    for (auto xx:motor_nodes){
+        un_motor[xx]=true;
+    }
+
     vector<string> experiments{"lorenz", "sin", "brownian", "rossler", "fourier", "o-u", "constant"};
-    //experiments={"fourier"};
-    //for (auto curtp:experiments){
-    //    run_exp(curtp, 20, 50000, 100000);
-    //}
-    run_special("fourier", "fourier_rev", 20, 50000, 100000);
+    experiments={"fourier"};
+    for (auto curtp:experiments){
+       run_exp(curtp, 20, 50000, 100000);
+    }
     return 0;
 }
 /*
