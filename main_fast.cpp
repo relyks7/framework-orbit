@@ -7,6 +7,7 @@
 #include <thread>
 #include <iomanip>
 #include <unordered_map>
+#include <unordered_set>
 #include <Accelerate/Accelerate.h>
 using namespace std;
 #define all(v) v.begin(), v.end()
@@ -35,12 +36,6 @@ void matmat_transpose(const vector<float>& a, const vector<float>& b, vector<flo
 float mag(const vector<float>&a, int start_idx, int size){
     return cblas_sdot(size, a.data()+start_idx, 1, a.data()+start_idx, 1);
 }
-vector<float> topk(vector<float> a, int k){
-    vector<int> inds(a.size(), 0); iota(all(inds), 0);
-    nth_element(inds.begin(), inds.begin()+k, inds.end(), [&](const int& xx, const int& yy){return fabs(a[xx])>fabs(a[yy]);});
-    for (int i=k;i<a.size();i++) a[inds[i]]=0.0f;
-    return a;
-}
 void delta_rule(vector<float> &a, const vector<float>&x, const vector<float>&err, float lr, int n, int m, int idx){
     //a: nxm, x: mx1, err: nx1
     for (int i=0;i<n;i++){
@@ -49,58 +44,154 @@ void delta_rule(vector<float> &a, const vector<float>&x, const vector<float>&err
         }
     }
 }
+vector<float> randvec(int l, float mg){
+    vector<float> ret(l, 0.0f); for (int i=0;i<l;i++) ret[i]=gaussian_noise(0, mg);
+    return ret;
+}
+struct edge{
+    vector<float> w;
+    vector<float> u; 
+    vector<float> v;
+};
 class lupus{
     public:
-        int n, d, k;
-        vector<unordered_map<int, vector<float>>> radj;
+        int n, d;
+        vector<unordered_map<int, edge>> radj;
         vector<float> h; //nxdx1
         vector<float> dh; //nxdx1
-        vector<float> err; //dx1
-        vector<float> m; //nxdxd
-        vector<float> u; //nxscalar
+        vector<float> force; //nxdx1
         vector<float> received_signal; //dx1
         vector<float> chl_err; //dx1
         vector<float> par_change; //dx1
-        vector<float> m_t; //dxd
-        float slow_learn, fast_learn;
-        float omega, tau;
+        vector<float> precision; //dx1
+        vector<float> chl_err_p; //dx1
+        vector<float> err_p; //dx1
+        vector<float> prior; //dx1
+        vector<bool> input; //nx1
+        float slow_learn, fast_learn, error_learn, eps;
+        void reset(){
+            radj.assign(n, unordered_map<int, edge>{});
+            radj[0][1]=edge{randvec(d*d, 1.0f/sqrtf(d)), vector<float>(d, 0.0f), vector<float>(d, 0.0f)};
+            radj[2][1]=edge{randvec(d*d, 1.0f/sqrtf(d)), vector<float>(d, 0.0f), vector<float>(d, 0.0f)};
+            h.assign(n*d, 0.0f); h=randvec(n*d, 1.0f/sqrtf(d));
+            dh.assign(n*d, 0.0f);
+            force.assign(n*d, 0.0f);
+            received_signal.assign(d, 0.0f);
+            chl_err.assign(d, 0.0f);
+            par_change.assign(d, 0.0f);
+            precision.assign(d, 0.0f);
+            chl_err_p.assign(d, 0.0f);
+            err_p.assign(d, 0.0f);
+            prior.assign(d, 0.0f);
+            input.assign(n, false); input[0]=true;
+        }
+        lupus(float un, float ud, float sl, float fl, float el, float e){
+            n=un; d=ud;
+            slow_learn=sl; fast_learn=fl; error_learn=el; eps=e;
+            reset();
+        }
         void forward(){
-            fill(all(dh), 0.0f);
+            fill(all(force), 0.0f);
             for (int i=0;i<n;i++){
-                fill(all(err), 0.0f);
-                fill(all(m_t), 0.0f);
-                float err_mag=0.0f;
-                for (auto& [par, w]:radj[i]){
+                fill(all(err_p), 0.0f);
+                for (auto& [par, e]:radj[i]){
+                    auto& [w, u, v]=e;
+                    for (int j=0;j<d;j++) precision[j]=1.0f/(max(0.0f, u[j]-v[j]*v[j])+eps);
+                    // for (int j=0;j<d;j++) precision[j]=1.0f;
                     matvec(w, h, received_signal, d, d, 0, par);
                     for (int j=0;j<d;j++) {
                         chl_err[j]=received_signal[j]-h[i*d+j];
-                        err[j]+=chl_err[j];
+                        chl_err_p[j]=chl_err[j]*precision[j];
+                        err_p[j]+=chl_err_p[j];
+                        u[j]+=dt*(chl_err[j]*chl_err[j]-u[j]);
+                        v[j]+=dt*(chl_err[j]-v[j]);
                     }
-                    for (int j=0;j<d;j++) {
-                        for (int l=0;l<d;l++){
-                            m_t[j*d+l]+=chl_err[j]*chl_err[l]/radj[i].size();
-                        }
-                    }
-                    err_mag+=mag(chl_err, 0, d)/(d*radj[i].size());
-                    matvec_transpose(w, chl_err, par_change, d, d, 0, 0);
-                    for (int j=0;j<d;j++) dh[par*d+j]-=par_change[j];
-                    delta_rule(w, h, chl_err, slow_learn, d, d, par);
+                    matvec_transpose(w, dh, par_change, d, d, 0, i);
+                    for (int j=0;j<d;j++) force[par*d+j]-=par_change[j];
+                    delta_rule(w, h, chl_err_p, slow_learn, d, d, par);
                 }
-                u[i]+=dt*(err_mag-u[i]);
-                for (int j=0;j<d;j++) {
-                    for (int l=0;l<d;l++){
-                        m[i*d*d+j*d+l]+=dt*(m_t[j*d+l]-m[i*d*d+j*d+l]);
-                    }
-                }
-                for (int j=0;j<d;j++) dh[i*d+j]+=err[j];
+                for (int j=0;j<d;j++) force[i*d+j]+=err_p[j];
             }
             for (int i=0;i<n;i++){
-                vector<float> idh(d,0);
-                for (int j=0;j<d;j++){
-                    idh[j]=dh[i*d+j];
-                }
-                idh=topk(idh, k);
-                for (int j=0;j<d;j++) h[i*d+j]+=dt*fast_learn*idh[j];
+                if (input[i]) for (int j=0;j<d;j++) force[i*d+j]+=prior[j];
+                for (int j=0;j<d;j++) dh[i*d+j]+=dt*error_learn*(force[i*d+j]-dh[i*d+j]);
+                if (!input[i]) for (int j=0;j<d;j++) h[i*d+j]+=dt*fast_learn*dh[i*d+j];
             }
         }
+        vector<float> step(vector<float> ipt, vector<float> expected){
+            prior=expected;
+            vector<float> ret(d,0.0f);
+            for (int i=0;i<d;i++) ret[i]-=h[2*d+i];
+            for (int i=0;i<d;i++) h[0*d+i]=ipt[i];
+            forward();
+            for (int i=0;i<d;i++) ret[i]+=h[2*d+i];
+            return ret;
+        }
 };
+vector<float> flrs{15.0f, 20.0f};
+vector<float> slrs{0.01f, 0.02f, 0.03f};
+vector<float> elrs{2.0f, 4.0f, 7.0f, 10.0f, 15.0f};
+vector<lupus> sextus_base{};
+vector<int> total_success(100,0);
+vector<pair<float, float>> trial{{1.0f,0.0f},{0.0f,1.0f},{-1.0f,0.0f},{0.0f,-1.0f},{0.8f,0.8f},{-0.8f,0.8f},{-0.8f,-0.8f},{0.8f,-0.8f},{0.15f,0.65f},{-0.7f,0.2f},{0.55f,-0.1f},{-0.25f,-0.9f},{0.9f,0.35f},{-0.4f,0.6f},{0.3f,-0.2f},{0.75f,0.1f},{0.3f,-0.2f},{-0.6f,-0.4f},{0.3f,-0.2f},{0.05f,0.05f},{-0.05f,0.05f},{0.05f,-0.05f},{-0.05f,-0.05f},{0.95f,-0.95f},{-0.95f,0.95f},{0.0f,0.0f}};
+int main(){
+    for (int i=0;i<100;i++) sextus_base.push_back(lupus(3, 4, 0.0f, 0.0f, 0.0f, 1.0f));
+    for (auto flr:flrs){
+        for (auto slr:slrs){
+            for (auto elr:elrs){
+                int success=0.0f;
+                for (int _=0;_<100;_++){
+                    lupus sextus=sextus_base[_]; sextus.fast_learn=flr; sextus.slow_learn=slr; sextus.error_learn=elr;
+                    float curx=0.0f;
+                    float cury=0.0f;
+                    for (int i=0;i<100000;i++){
+                        vector<float> mv=sextus.step({curx, cury, 0.0f, 0.0f}, {1.0f-curx, 2.0f-cury, 0.0f, 0.0f});
+                        curx+=mv[0]; cury+=mv[1];
+                    }
+                    if (abs(curx-1.0f)<0.01f && abs(cury-2.0f)<0.01f) {
+                        success++;
+                        total_success[_]++;
+                    }
+                }
+                cout<<"fast learn: "<<flr<<"\nslow learn: "<<slr<<"\nerror learn: "<<elr<<"\nsuccess rate: "<<success<<"/100\n";
+            }
+        }
+    }
+    for (int i=0;i<100;i++){
+        cout<<"initialization "<<i<<" success: "<<total_success[i]<<'\n';
+    }
+    while (true){
+        int i; cin>>i;
+        lupus sextus=sextus_base[i];
+        sextus.fast_learn=15.0f;
+        sextus.slow_learn=0.02f;
+        sextus.error_learn=15.0f;
+        float curx=0.0f;
+        float cury=0.0f;
+        cout<<"trial:\n";
+        for (auto [goalx, goaly]:trial){
+            int timer=0;
+            bool converged=false;
+            for (int i=0;i<100000;i++){
+                vector<float> mv=sextus.step({curx, cury, 0.0f, 0.0f}, {goalx-curx, goaly-cury, 0.0f, 0.0f});
+                curx+=mv[0]; cury+=mv[1];
+                if (abs(curx-goalx)<0.01f && abs(cury-goaly)<0.01f) {
+                    timer++;
+                } else timer=0;
+                if (timer>200){
+                    cout<<"tick "<<i<<", converged to ("<<goalx<<", "<<goaly<<")\n";
+                    converged=true;
+                    break;
+                }
+            }
+            if (!converged) {
+                cout<<"did not converge to ("<<goalx<<", "<<goaly<<")\n";
+                break;
+            }
+        }
+    }
+    return 0;
+}
+/*
+clang++ -std=c++23 -O3 -Wall -DACCELERATE_NEW_LAPACK main_fast.cpp -framework Accelerate -o main_fast && ./main_fast
+*/
