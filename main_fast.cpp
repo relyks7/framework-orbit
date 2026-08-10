@@ -134,7 +134,13 @@ vector<float> elrs{2.0f, 4.0f, 7.0f, 10.0f, 15.0f};
 vector<lupus> sextus_base{};
 vector<int> total_success(100,0);
 vector<pair<float, float>> trial{{1.0f,0.0f},{0.0f,1.0f},{-1.0f,0.0f},{0.0f,-1.0f},{0.8f,0.8f},{-0.8f,0.8f},{-0.8f,-0.8f},{0.8f,-0.8f},{0.15f,0.65f},{-0.7f,0.2f},{0.55f,-0.1f},{-0.25f,-0.9f},{0.9f,0.35f},{-0.4f,0.6f},{0.3f,-0.2f},{0.75f,0.1f},{0.3f,-0.2f},{-0.6f,-0.4f},{0.3f,-0.2f},{0.05f,0.05f},{-0.05f,0.05f},{0.05f,-0.05f},{-0.05f,-0.05f},{0.95f,-0.95f},{-0.95f,0.95f},{0.0f,0.0f}};
+vector<float> j=randvec(4, 1.0f/sqrtf(2.0f));
+int bestsuccess=-1;
+float bestfl;
+float bestsl;
+float bestel;
 int main(){
+    cout<<"using j: \n"<<j[0]<<' '<<j[1]<<'\n'<<j[2]<<' '<<j[3]<<'\n';
     for (int i=0;i<100;i++) sextus_base.push_back(lupus(3, 4, 0.0f, 0.0f, 0.0f, 1.0f));
     for (auto flr:flrs){
         for (auto slr:slrs){
@@ -146,7 +152,7 @@ int main(){
                     float cury=0.0f;
                     for (int i=0;i<100000;i++){
                         vector<float> mv=sextus.step({curx, cury, 0.0f, 0.0f}, {1.0f-curx, 2.0f-cury, 0.0f, 0.0f});
-                        curx+=mv[0]; cury+=mv[1];
+                        curx+=j[0]*mv[0]+j[1]*mv[1]; cury+=j[2]*mv[0]+j[3]*mv[1];
                     }
                     if (abs(curx-1.0f)<0.01f && abs(cury-2.0f)<0.01f) {
                         success++;
@@ -154,6 +160,9 @@ int main(){
                     }
                 }
                 cout<<"fast learn: "<<flr<<"\nslow learn: "<<slr<<"\nerror learn: "<<elr<<"\nsuccess rate: "<<success<<"/100\n";
+                if (success>bestsuccess){
+                    bestsuccess=success; bestfl=flr; bestsl=slr; bestel=elr;
+                }
             }
         }
     }
@@ -163,9 +172,9 @@ int main(){
     while (true){
         int i; cin>>i;
         lupus sextus=sextus_base[i];
-        sextus.fast_learn=15.0f;
-        sextus.slow_learn=0.02f;
-        sextus.error_learn=15.0f;
+        sextus.fast_learn=bestfl;
+        sextus.slow_learn=bestsl;
+        sextus.error_learn=bestel;
         float curx=0.0f;
         float cury=0.0f;
         cout<<"trial:\n";
@@ -174,7 +183,8 @@ int main(){
             bool converged=false;
             for (int i=0;i<100000;i++){
                 vector<float> mv=sextus.step({curx, cury, 0.0f, 0.0f}, {goalx-curx, goaly-cury, 0.0f, 0.0f});
-                curx+=mv[0]; cury+=mv[1];
+                curx+=j[0]*mv[0]+j[1]*mv[1]; cury+=j[2]*mv[0]+j[3]*mv[1];
+                //if (i%1000) cout<<curx<<' '<<cury<<'\n';
                 if (abs(curx-goalx)<0.01f && abs(cury-goaly)<0.01f) {
                     timer++;
                 } else timer=0;
