@@ -36,11 +36,11 @@ void matmat_transpose(const vector<float>& a, const vector<float>& b, vector<flo
 float mag(const vector<float>&a, int start_idx, int size){
     return cblas_sdot(size, a.data()+start_idx, 1, a.data()+start_idx, 1);
 }
-void delta_rule(vector<float> &a, const vector<float>&x, const vector<float>&err, float lr, int n, int m, int idx){
+void delta_rule(vector<float> &a, const vector<float>&x, const vector<float>&err, const vector<float>& y, float lr, float s, int n, int m, int idx1, int idx2){
     //a: nxm, x: mx1, err: nx1
     for (int i=0;i<n;i++){
         for (int j=0;j<m;j++){
-            a[i*m+j]+=-lr*dt*err[i]*x[idx*m+j];
+            a[i*m+j]+=-lr*dt*err[i]*(1-(y[idx2*n+i]*y[idx2*n+i])/(s*s))*x[idx1*m+j];
         }
     }
 }
@@ -56,150 +56,138 @@ struct edge{
 class lupus{
     public:
         int n, d;
-        vector<unordered_map<int, edge>> radj;
+        vector<unordered_map<int, edge>> adj;
         vector<float> h; //nxdx1
         vector<float> dh; //nxdx1
         vector<float> force; //nxdx1
         vector<float> received_signal; //dx1
         vector<float> chl_err; //dx1
+        vector<float> scaled_dh; //dx1
         vector<float> par_change; //dx1
         vector<float> precision; //dx1
         vector<float> chl_err_p; //dx1
-        vector<float> err_p; //dx1
-        vector<float> prior; //dx1
-        vector<bool> input; //nx1
-        float slow_learn, fast_learn, error_learn, eps;
+        vector<bool> fixed; //nx1
+        float slow_learn, fast_learn, error_learn, eps, tanh_mag;
         void reset(){
-            radj.assign(n, unordered_map<int, edge>{});
-            radj[0][1]=edge{randvec(d*d, 1.0f/sqrtf(d)), vector<float>(d, 0.0f), vector<float>(d, 0.0f)};
-            radj[2][1]=edge{randvec(d*d, 1.0f/sqrtf(d)), vector<float>(d, 0.0f), vector<float>(d, 0.0f)};
+            adj.assign(n, unordered_map<int, edge>{});
+            adj[1][3]=edge{randvec(d*d, 1.0f/sqrtf(d)), vector<float>(d, 0.0f), vector<float>(d, 0.0f)};
+            adj[3][0]=edge{randvec(d*d, 1.0f/sqrtf(d)), vector<float>(d, 0.0f), vector<float>(d, 0.0f)};
+            adj[1][4]=adj[1][3];
+            adj[4][2]=adj[3][0];
             h.assign(n*d, 0.0f); h=randvec(n*d, 1.0f/sqrtf(d));
             dh.assign(n*d, 0.0f);
             force.assign(n*d, 0.0f);
             received_signal.assign(d, 0.0f);
             chl_err.assign(d, 0.0f);
+            scaled_dh.assign(d, 0.0f);
             par_change.assign(d, 0.0f);
             precision.assign(d, 0.0f);
             chl_err_p.assign(d, 0.0f);
-            err_p.assign(d, 0.0f);
-            prior.assign(d, 0.0f);
-            input.assign(n, false); input[0]=true;
+            fixed.assign(n, false); fixed[0]=true; fixed[2]=true;
         }
-        lupus(float un, float ud, float sl, float fl, float el, float e){
+        lupus(float un, float ud, float sl, float fl, float el, float e, float tm){
             n=un; d=ud;
-            slow_learn=sl; fast_learn=fl; error_learn=el; eps=e;
+            slow_learn=sl; fast_learn=fl; error_learn=el; eps=e; tanh_mag=tm;
             reset();
         }
         void forward(){
             fill(all(force), 0.0f);
-            for (int i=0;i<n;i++){
-                fill(all(err_p), 0.0f);
-                for (auto& [par, e]:radj[i]){
+            for (int par=0;par<n;par++){
+                for (auto& [i, e]:adj[par]){
                     auto& [w, u, v]=e;
                     for (int j=0;j<d;j++) precision[j]=1.0f/(max(0.0f, u[j]-v[j]*v[j])+eps);
                     // for (int j=0;j<d;j++) precision[j]=1.0f;
                     matvec(w, h, received_signal, d, d, 0, par);
+                    for (int j=0;j<d;j++) received_signal[j]=tanh_mag*tanhf(received_signal[j]/tanh_mag);
                     for (int j=0;j<d;j++) {
                         chl_err[j]=received_signal[j]-h[i*d+j];
                         chl_err_p[j]=chl_err[j]*precision[j];
-                        err_p[j]+=chl_err_p[j];
+                        force[i*d+j]+=chl_err_p[j];
                         u[j]+=dt*(chl_err[j]*chl_err[j]-u[j]);
                         v[j]+=dt*(chl_err[j]-v[j]);
+                        scaled_dh[j]=dh[i*d+j]*(1-(received_signal[j]*received_signal[j])/(tanh_mag*tanh_mag));
                     }
-                    matvec_transpose(w, dh, par_change, d, d, 0, i);
+                    matvec_transpose(w, scaled_dh, par_change, d, d, 0, 0);
                     for (int j=0;j<d;j++) force[par*d+j]-=par_change[j];
-                    delta_rule(w, h, chl_err_p, slow_learn, d, d, par);
+                    delta_rule(w, h, chl_err_p, received_signal, slow_learn, tanh_mag, d, d, par, 0);
+                    if (par==1 && i==3) adj[1][4].w=w;
+                    if (par==3 && i==0) adj[4][2].w=w;
+                    if (par==1 && i==4) adj[1][3].w=w;
+                    if (par==4 && i==2) adj[3][0].w=w;
                 }
-                for (int j=0;j<d;j++) force[i*d+j]+=err_p[j];
             }
             for (int i=0;i<n;i++){
-                if (input[i]) for (int j=0;j<d;j++) force[i*d+j]+=prior[j];
                 for (int j=0;j<d;j++) dh[i*d+j]+=dt*error_learn*(force[i*d+j]-dh[i*d+j]);
-                if (!input[i]) for (int j=0;j<d;j++) h[i*d+j]+=dt*fast_learn*dh[i*d+j];
+                if (!fixed[i]) for (int j=0;j<d;j++) h[i*d+j]+=dt*fast_learn*dh[i*d+j];
             }
         }
-        vector<float> step(vector<float> ipt, vector<float> expected){
-            prior=expected;
+        vector<float> step(vector<float> ipt, vector<float> prior){
             vector<float> ret(d,0.0f);
-            for (int i=0;i<d;i++) ret[i]-=h[2*d+i];
             for (int i=0;i<d;i++) h[0*d+i]=ipt[i];
+            for (int i=0;i<d;i++) h[2*d+i]=prior[i];
             forward();
-            for (int i=0;i<d;i++) ret[i]+=h[2*d+i];
+            for (int i=0;i<d;i++) ret[i]+=dt*fast_learn*dh[0*d+i];
             return ret;
         }
 };
-vector<float> flrs{15.0f, 20.0f};
-vector<float> slrs{0.01f, 0.02f, 0.03f};
-vector<float> elrs{2.0f, 4.0f, 7.0f, 10.0f, 15.0f};
-vector<lupus> sextus_base{};
-vector<int> total_success(100,0);
-vector<pair<float, float>> trial{{1.0f,0.0f},{0.0f,1.0f},{-1.0f,0.0f},{0.0f,-1.0f},{0.8f,0.8f},{-0.8f,0.8f},{-0.8f,-0.8f},{0.8f,-0.8f},{0.15f,0.65f},{-0.7f,0.2f},{0.55f,-0.1f},{-0.25f,-0.9f},{0.9f,0.35f},{-0.4f,0.6f},{0.3f,-0.2f},{0.75f,0.1f},{0.3f,-0.2f},{-0.6f,-0.4f},{0.3f,-0.2f},{0.05f,0.05f},{-0.05f,0.05f},{0.05f,-0.05f},{-0.05f,-0.05f},{0.95f,-0.95f},{-0.95f,0.95f},{0.0f,0.0f}};
-vector<float> j=randvec(4, 1.0f/sqrtf(2.0f));
-int bestsuccess=-1;
-float bestfl;
-float bestsl;
-float bestel;
+vector<pair<float,float>> trial={{1.2f,0.4f},{-0.8f,1.1f},{0.3f,-1.4f},{-1.3f,-0.2f},{0.9f,1.0f},{-0.4f,-0.9f},{1.5f,-0.3f},{-1.0f,0.6f},{0.2f,1.6f},{-0.7f,-1.2f},{1.0f,-0.8f},{-1.5f,0.1f},{0.6f,0.7f},{-0.2f,-1.6f},{1.4f,0.5f},{-0.9f,-0.7f},{0.5f,-1.1f},{-1.2f,0.9f},{0.8f,-0.1f},{-0.3f,1.2f},{1.1f,-0.5f},{-0.6f,1.4f},{-1.4f,-0.5f},{0.4f,1.0f},{0.7f,-1.5f},{-1.1f,0.2f},{1.3f,0.8f},{-0.5f,-1.3f},{1.6f,0.0f},{0.0f,-1.0f}};
+int total=1000; int succeeded=0;
+vector<int> endsat(trial.size()+1,0);
+vector<int> eachend(total, 0);
+vector<lupus> sexti{};
+float l1=1.0f, l2=1.0f;
+float pival=3.141592653589793;
 int main(){
-    cout<<"using j: \n"<<j[0]<<' '<<j[1]<<'\n'<<j[2]<<' '<<j[3]<<'\n';
-    for (int i=0;i<100;i++) sextus_base.push_back(lupus(3, 4, 0.0f, 0.0f, 0.0f, 1.0f));
-    for (auto flr:flrs){
-        for (auto slr:slrs){
-            for (auto elr:elrs){
-                int success=0.0f;
-                for (int _=0;_<100;_++){
-                    lupus sextus=sextus_base[_]; sextus.fast_learn=flr; sextus.slow_learn=slr; sextus.error_learn=elr;
-                    float curx=0.0f;
-                    float cury=0.0f;
-                    for (int i=0;i<100000;i++){
-                        vector<float> mv=sextus.step({curx, cury, 0.0f, 0.0f}, {1.0f-curx, 2.0f-cury, 0.0f, 0.0f});
-                        curx+=j[0]*mv[0]+j[1]*mv[1]; cury+=j[2]*mv[0]+j[3]*mv[1];
-                    }
-                    if (abs(curx-1.0f)<0.01f && abs(cury-2.0f)<0.01f) {
-                        success++;
-                        total_success[_]++;
-                    }
-                }
-                cout<<"fast learn: "<<flr<<"\nslow learn: "<<slr<<"\nerror learn: "<<elr<<"\nsuccess rate: "<<success<<"/100\n";
-                if (success>bestsuccess){
-                    bestsuccess=success; bestfl=flr; bestsl=slr; bestel=elr;
-                }
-            }
-        }
-    }
-    for (int i=0;i<100;i++){
-        cout<<"initialization "<<i<<" success: "<<total_success[i]<<'\n';
-    }
-    while (true){
-        int i; cin>>i;
-        lupus sextus=sextus_base[i];
-        sextus.fast_learn=bestfl;
-        sextus.slow_learn=bestsl;
-        sextus.error_learn=bestel;
-        float curx=0.0f;
-        float cury=0.0f;
-        cout<<"trial:\n";
-        for (auto [goalx, goaly]:trial){
+    for (int _=0;_<total;_++){
+        lupus sextus(5, 4, 0.01f, 15.0f, 4.0f, 1.0f, 8.0f);
+        sexti.push_back(sextus);
+        // float q1=-0.6f, q2=1.2f;
+        // float cx=l1*cosf(q1)+l2*cosf(q1+q2);
+        // float cy=l1*sinf(q1)+l2*sinf(q1+q2);
+        float cx=0.0f, cy=0.0f;
+        bool done=true;
+        for (int i=0;i<trial.size();i++){
+            auto [goalx, goaly]=trial[i];
             int timer=0;
             bool converged=false;
-            for (int i=0;i<100000;i++){
-                vector<float> mv=sextus.step({curx, cury, 0.0f, 0.0f}, {goalx-curx, goaly-cury, 0.0f, 0.0f});
-                curx+=j[0]*mv[0]+j[1]*mv[1]; cury+=j[2]*mv[0]+j[3]*mv[1];
-                //if (i%1000) cout<<curx<<' '<<cury<<'\n';
-                if (abs(curx-goalx)<0.01f && abs(cury-goaly)<0.01f) {
-                    timer++;
-                } else timer=0;
-                if (timer>200){
-                    cout<<"tick "<<i<<", converged to ("<<goalx<<", "<<goaly<<")\n";
-                    converged=true;
-                    break;
+            for (int j=0;j<100000;j++){
+                //float theta=pival/2.0f*tanhf(cx);
+                float theta=0.25f*pival;
+                vector<float> sense(sextus.d,0.0f);
+                sense[0]=cx; sense[1]=cy; 
+                //sense[2]=cosf(theta); sense[3]=sinf(theta);
+                vector<float> want(sextus.d,0.0f);
+                want[0]=goalx; want[1]=goaly;
+                vector<float> mv=sextus.step(sense, want);
+                // q1+=mv[0]; q2+=mv[1];
+                // q1=remainderf(q1, 2.0f*pival);
+                // q2=remainderf(q2, 2.0f*pival);
+                // cx=l1*cosf(q1)+l2*cosf(q1+q2);
+                // cy=l1*sinf(q1)+l2*sinf(q1+q2);
+                cx+=mv[0]*cosf(theta)-mv[1]*sinf(theta);
+                cy+=mv[0]*sinf(theta)+mv[1]*cosf(theta);
+                // cx+=mv[0];
+                if (abs(cx-goalx)<0.01f && abs(cy-goaly)<0.01f) timer++;
+                else timer=0;
+                if (timer>200) {
+                    converged=true; break;
                 }
             }
-            if (!converged) {
-                cout<<"did not converge to ("<<goalx<<", "<<goaly<<")\n";
+            if (!converged){
+                done=false;
+                endsat[i]++;
+                eachend[_]=i;
                 break;
             }
         }
+        if (done) {
+            endsat[trial.size()]++;
+            eachend[_]=trial.size();
+            succeeded++;
+        }
     }
+    for (int i=0;i<=trial.size();i++) cout<<i<<": "<<endsat[i]<<'\n';
+    cout<<succeeded<<'/'<<total<<'\n'<<setprecision(4)<<100.0f*succeeded/total<<"%\n";
     return 0;
 }
 /*
