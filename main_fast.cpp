@@ -58,36 +58,40 @@ class lupus{
         int n, d;
         vector<unordered_map<int, edge>> adj;
         vector<float> h; //nxdx1
-        vector<float> dh; //nxdx1
         vector<float> force; //nxdx1
         vector<float> received_signal; //dx1
         vector<float> chl_err; //dx1
-        vector<float> scaled_dh; //dx1
+        vector<float> scaled_chl_err_p; //dx1
         vector<float> par_change; //dx1
         vector<float> precision; //dx1
         vector<float> chl_err_p; //dx1
         vector<bool> fixed; //nx1
-        float slow_learn, fast_learn, error_learn, eps, tanh_mag;
+        float slow_learn, fast_learn, eps, tanh_mag;
         void reset(){
             adj.assign(n, unordered_map<int, edge>{});
             adj[1][3]=edge{randvec(d*d, 1.0f/sqrtf(d)), vector<float>(d, 0.0f), vector<float>(d, 0.0f)};
-            adj[3][0]=edge{randvec(d*d, 1.0f/sqrtf(d)), vector<float>(d, 0.0f), vector<float>(d, 0.0f)};
+            adj[3][5]=edge{randvec(d*d, 1.0f/sqrtf(d)), vector<float>(d, 0.0f), vector<float>(d, 0.0f)};
+            adj[5][7]=edge{randvec(d*d, 1.0f/sqrtf(d)), vector<float>(d, 0.0f), vector<float>(d, 0.0f)};
+            adj[7][9]=edge{randvec(d*d, 1.0f/sqrtf(d)), vector<float>(d, 0.0f), vector<float>(d, 0.0f)};
+            adj[9][0]=edge{randvec(d*d, 1.0f/sqrtf(d)), vector<float>(d, 0.0f), vector<float>(d, 0.0f)};
             adj[1][4]=adj[1][3];
-            adj[4][2]=adj[3][0];
+            adj[4][6]=adj[3][5];
+            adj[6][8]=adj[5][7];
+            adj[8][10]=adj[7][9];
+            adj[10][2]=adj[9][0];
             h.assign(n*d, 0.0f); h=randvec(n*d, 1.0f/sqrtf(d));
-            dh.assign(n*d, 0.0f);
             force.assign(n*d, 0.0f);
             received_signal.assign(d, 0.0f);
             chl_err.assign(d, 0.0f);
-            scaled_dh.assign(d, 0.0f);
+            scaled_chl_err_p.assign(d, 0.0f);
             par_change.assign(d, 0.0f);
             precision.assign(d, 0.0f);
             chl_err_p.assign(d, 0.0f);
             fixed.assign(n, false); fixed[0]=true; fixed[2]=true;
         }
-        lupus(float un, float ud, float sl, float fl, float el, float e, float tm){
+        lupus(float un, float ud, float sl, float fl, float e, float tm){
             n=un; d=ud;
-            slow_learn=sl; fast_learn=fl; error_learn=el; eps=e; tanh_mag=tm;
+            slow_learn=sl; fast_learn=fl; eps=e; tanh_mag=tm;
             reset();
         }
         void forward(){
@@ -105,20 +109,25 @@ class lupus{
                         force[i*d+j]+=chl_err_p[j];
                         u[j]+=dt*(chl_err[j]*chl_err[j]-u[j]);
                         v[j]+=dt*(chl_err[j]-v[j]);
-                        scaled_dh[j]=dh[i*d+j]*(1-(received_signal[j]*received_signal[j])/(tanh_mag*tanh_mag));
+                        scaled_chl_err_p[j]=chl_err_p[j]*(1-(received_signal[j]*received_signal[j])/(tanh_mag*tanh_mag));
                     }
-                    matvec_transpose(w, scaled_dh, par_change, d, d, 0, 0);
+                    matvec_transpose(w, scaled_chl_err_p, par_change, d, d, 0, 0);
                     for (int j=0;j<d;j++) force[par*d+j]-=par_change[j];
                     delta_rule(w, h, chl_err_p, received_signal, slow_learn, tanh_mag, d, d, par, 0);
                     if (par==1 && i==3) adj[1][4].w=w;
-                    if (par==3 && i==0) adj[4][2].w=w;
+                    if (par==3 && i==5) adj[4][6].w=w;
+                    if (par==5 && i==7) adj[6][8].w=w;
+                    if (par==7 && i==9) adj[8][10].w=w;
+                    if (par==9 && i==0) adj[10][2].w=w;
                     if (par==1 && i==4) adj[1][3].w=w;
-                    if (par==4 && i==2) adj[3][0].w=w;
+                    if (par==4 && i==6) adj[3][5].w=w;
+                    if (par==6 && i==8) adj[5][7].w=w;
+                    if (par==8 && i==10) adj[7][9].w=w;
+                    if (par==10 && i==2) adj[9][0].w=w;
                 }
             }
             for (int i=0;i<n;i++){
-                for (int j=0;j<d;j++) dh[i*d+j]+=dt*error_learn*(force[i*d+j]-dh[i*d+j]);
-                if (!fixed[i]) for (int j=0;j<d;j++) h[i*d+j]+=dt*fast_learn*dh[i*d+j];
+                if (!fixed[i]) for (int j=0;j<d;j++) h[i*d+j]+=dt*fast_learn*force[i*d+j];
             }
         }
         vector<float> step(vector<float> ipt, vector<float> prior){
@@ -126,11 +135,25 @@ class lupus{
             for (int i=0;i<d;i++) h[0*d+i]=ipt[i];
             for (int i=0;i<d;i++) h[2*d+i]=prior[i];
             forward();
-            for (int i=0;i<d;i++) ret[i]+=dt*fast_learn*dh[0*d+i];
+            for (int i=0;i<d;i++) ret[i]+=dt*fast_learn*force[0*d+i];
             return ret;
         }
 };
-vector<pair<float,float>> trial={{1.2f,0.4f},{-0.8f,1.1f},{0.3f,-1.4f},{-1.3f,-0.2f},{0.9f,1.0f},{-0.4f,-0.9f},{1.5f,-0.3f},{-1.0f,0.6f},{0.2f,1.6f},{-0.7f,-1.2f},{1.0f,-0.8f},{-1.5f,0.1f},{0.6f,0.7f},{-0.2f,-1.6f},{1.4f,0.5f},{-0.9f,-0.7f},{0.5f,-1.1f},{-1.2f,0.9f},{0.8f,-0.1f},{-0.3f,1.2f},{1.1f,-0.5f},{-0.6f,1.4f},{-1.4f,-0.5f},{0.4f,1.0f},{0.7f,-1.5f},{-1.1f,0.2f},{1.3f,0.8f},{-0.5f,-1.3f},{1.6f,0.0f},{0.0f,-1.0f}};
+vector<pair<float, float>> gettrial(int len, unsigned int seed){
+    mt19937 target_rng(seed);
+    uniform_real_distribution<float> dist_target(-1.6f, 1.6f);
+    vector<pair<float, float>> ret{};
+    float tx=0.0f, ty=0.0f;
+    while (ret.size()<len){
+        float nx=dist_target(target_rng);
+        float ny=dist_target(target_rng);
+        if (hypotf(nx-tx, ny-ty)<1.0f) continue;
+        ret.push_back({nx, ny}); tx=nx; ty=ny;
+    }
+    return ret;
+}
+vector<pair<float,float>> trial=gettrial(30, 1225);
+//vector<float> angles={0.0f,0.25f,0.5f,0.5277778f,0.5555556f,0.5833333f,0.6111111f,0.625f,0.6388889f,0.6527778f,0.6666667f,0.6805556f,0.6944444f,0.7083333f,0.7222222f,0.7361111f,0.75f};
 int total=1000; int succeeded=0;
 vector<int> endsat(trial.size()+1,0);
 vector<int> eachend(total, 0);
@@ -139,7 +162,7 @@ float l1=1.0f, l2=1.0f;
 float pival=3.141592653589793;
 int main(){
     for (int _=0;_<total;_++){
-        lupus sextus(5, 4, 0.01f, 15.0f, 4.0f, 1.0f, 8.0f);
+        lupus sextus(11, 4, 0.01f, 5.0f, 1.0f, 8.0f);
         sexti.push_back(sextus);
         // float q1=-0.6f, q2=1.2f;
         // float cx=l1*cosf(q1)+l2*cosf(q1+q2);
@@ -151,8 +174,8 @@ int main(){
             int timer=0;
             bool converged=false;
             for (int j=0;j<100000;j++){
-                //float theta=pival/2.0f*tanhf(cx);
-                float theta=0.25f*pival;
+                float theta=pival*1.0f*tanhf(cx);
+                //float theta=angles[i/10]*pival;
                 vector<float> sense(sextus.d,0.0f);
                 sense[0]=cx; sense[1]=cy; 
                 //sense[2]=cosf(theta); sense[3]=sinf(theta);
