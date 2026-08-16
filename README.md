@@ -1,2 +1,2 @@
 # framework-orbit
-Attempt at implementing a general learning agent (part 2).
+testing if local learning can reconcile an environmental state with a prior
