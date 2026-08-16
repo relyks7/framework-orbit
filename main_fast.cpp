@@ -205,7 +205,6 @@ vector<lupus> sexti{};
 float l1=1.0f, l2=1.0f;
 float pival=3.141592653589793;
 int main(){
-    for (auto [xx, yy]:trial) cout<<xx<<' '<<yy<<'\n';
     for (int _=0;_<total;_++){
         lupus sextus(13, 4, 0.01f, 5.0f, 1.0f, 8.0f);
         sexti.push_back(sextus);
@@ -256,7 +255,6 @@ int main(){
     }
     for (int i=0;i<=trial.size();i++) cout<<i<<": "<<endsat[i]<<'\n';
     cout<<succeeded<<'/'<<total<<'\n'<<setprecision(4)<<100.0f*succeeded/total<<"%\n";
-    cout<<"weird trial: "<<trial[2].first<<' '<<trial[2].second<<'\n';
     return 0;
 }
 /*
