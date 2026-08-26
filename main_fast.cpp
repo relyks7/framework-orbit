@@ -22,10 +22,10 @@ float gaussian_noise(float mean, float stddev){
     return dist(rng);
 }
 vector<float> actuator={
-    0.8f, 0.3f,-0.2f, 0.1f,
-    -0.4f, 0.7f, 0.2f, 0.0f,
-    0.1f,-0.3f,-0.6f, 0.4f,
-    0.2f, 0.1f,-0.3f,-0.5f
+    1.0f, 0.0f, 0.0f, 0.0f,
+    0.0f, 1.0f, 0.0f, 0.0f,
+    0.0f, 0.0f, 1.0f, 0.0f,
+    0.0f, 0.0f, 0.0f, 1.0f
 };
 thread_local uniform_real_distribution<float> disf(0.0f, 1.0f);
 float dt=0.01f;
@@ -146,6 +146,7 @@ class lupus_w{
         vector<bool> fixed; //nx1
         vector<float> prev_env; //dx1
         vector<float> prev_act; //dx1
+        vector<int> deg;
         map<pair<int, int>, pair<int, int>> mirror;
         int tick=0;
         lupus_k k=lupus_k(0, 0, 0.0f, 0.0f, 0.0f);
@@ -179,6 +180,12 @@ class lupus_w{
             prev_act.assign(d, 0.0f);
             fixed.assign(n, false); fixed[0]=true; fixed[2]=true;
             k.reset();
+            deg.assign(n,0);
+            for (int i=0;i<n;i++){
+                for (auto[j,_]:adj[i]){
+                    deg[i]++; deg[j]++;
+                }
+            }
             has_prev=false;
         }
         lupus_w(float un, float ud, float sl, float fl, float e, float tm, float nm, float min_n, float max_n, lupus_k uk){
@@ -213,10 +220,11 @@ class lupus_w{
                 }
             }
             for (int i=0;i<n;i++){
+                for (int j=0;j<d;j++) force[i*d+j]/=max(1, deg[i]);
                 if (!fixed[i]) for (int j=0;j<d;j++) h[i*d+j]+=dt*fast_learn*force[i*d+j];
             }
         }
-        vector<float> generate(vector<float> ipt, vector<float> prior){
+        vector<float> generate(vector<float> ipt, vector<float> prior, int settle_steps){
             if (has_prev){
                 vector<float> env_change(d,0.0f);
                 for (int i=0;i<d;i++) env_change[i]=(ipt[i]-prev_env[i])/dt;
@@ -225,14 +233,15 @@ class lupus_w{
             }
             for (int i=0;i<d;i++) h[0*d+i]=ipt[i];
             for (int i=0;i<d;i++) h[2*d+i]=prior[i];
-            forward();
+            for (int i=0;i<settle_steps;i++) forward();
             vector<float> ret(d,0.0f);
             vector<float> sense_force(d,0.0f); for (int i=0;i<d;i++) sense_force[i]=force[0*d+i];
             vector<float> act_k=k.forward(sense_force, sense_force);
             float act_rms=sqrtf(mag(act_k, 0, d)/d);
-            float exp_val=expf(-tick/2000.0f);
-            for (int i=0;i<d;i++) act_k[i]=(1-exp_val)*act_k[i]+gaussian_noise(0.0f,min(max_noise, max(min_noise*exp_val, noise_mag*act_rms)));
-            for (int i=0;i<d;i++) ret[i]+=dt*act_k[i];
+            for (int i=0;i<d;i++) {
+                act_k[i]+=gaussian_noise(0.0f,min(max_noise, max(min_noise*expf(-tick/100000.0f), noise_mag*act_rms)));
+                ret[i]=dt*act_k[i];
+            }
             prev_act=act_k;
             prev_env=ipt;
             has_prev=true;
@@ -249,9 +258,9 @@ vector<array<float,4>> gettrial(int len, unsigned int seed){
     }
     return ret;
 }
-vector<array<float,4>> trial=gettrial(20, 1225);
+vector<array<float,4>> trial=gettrial(30, 1225);
 //vector<float> angles={0.0f,0.25f,0.5f,0.5277778f,0.5555556f,0.5833333f,0.6111111f,0.625f,0.6388889f,0.6527778f,0.6666667f,0.6805556f,0.6944444f,0.7083333f,0.7222222f,0.7361111f,0.75f};
-int total=50; int succeeded=0;
+int total=100; int succeeded=0;
 vector<int> endsat(trial.size()+1,0);
 vector<int> eachend(total, 0);
 vector<lupus_w> sexti{};
@@ -295,12 +304,13 @@ int main(){
     } else{
         for (int _=0;_<total;_++){
             lupus_k keke(3, 4, 0.03f, 8.0f, 0.01f);
-            lupus_w sextus(9, 4, 0.01f, 5.0f, 1.0f, 8.0f, 0.1f, 0.2f, 0.2f, keke);
+            lupus_w sextus(9, 4, 0.01f, 5.0f, 1.0f, 8.0f, 0.1f, 0.05f, 0.2f, keke);
             // float q1=-0.6f, q2=1.2f;
             // float cx=l1*cosf(q1)+l2*cosf(q1+q2);
             // float cy=l1*sinf(q1)+l2*sinf(q1+q2);
             float cx=0.0f, cy=0.0f;
             float cw=0.0f, cz=0.0f;
+            float vw=0.0f, vx=0.0f, vy=0.0f, vz=0.0f;
             bool done=true;
             for (int i=0;i<trial.size();i++){
                 auto [goalw, goalx, goaly, goalz]=trial[i];
@@ -312,12 +322,12 @@ int main(){
                     vector<float> sense(sextus.d,0.0f);
                     // sense[0]=q1; sense[1]=q2; sense[2]=cx; sense[3]=cy;
                     sense[0]=cw; sense[1]=cx; sense[2]=cy; sense[3]=cz;
-                    //sense[2]=cosf(theta); sense[3]=sinf(theta);
+                    // sense[2]=cosf(theta); sense[3]=sinf(theta);
                     vector<float> want(sextus.d,0.0f);
                     // want[0]=q1; want[1]=q2; want[2]=goalx; want[3]=goaly;
                     want[0]=goalw; want[1]=goalx; want[2]=goaly; want[3]=goalz;
-                    vector<float> mv=sextus.generate(sense, want);
-                    // if (j%20==0) cout<<q1<<' '<<q2<<' '<<goalx<<' '<<goaly<<' '<<cx<<' '<<cy<<' '<<mv[0]<<' '<<mv[1]<<'\n';
+                    vector<float> mv=sextus.generate(sense, want, 1);
+                    // if (j%500==0) cout<<q1<<' '<<q2<<' '<<goalx<<' '<<goaly<<' '<<cx<<' '<<cy<<' '<<mv[0]<<' '<<mv[1]<<'\n';
                     // q1+=mv[0]; q2+=mv[1];
                     // q1=remainderf(q1, 2.0f*pival);
                     // q2=remainderf(q2, 2.0f*pival);
@@ -329,7 +339,10 @@ int main(){
                     vector<float> mv_j(sextus.d,0.0f);
                     matvec(actuator, mv, mv_j, sextus.d, sextus.d, 0, 0);
                     cw+=mv_j[0]; cx+=mv_j[1]; cy+=mv_j[2]; cz+=mv_j[3];
+                    // vw+=mv_j[0]; vx+=mv_j[1]; vy+=mv_j[2]; vz+=mv_j[3];
+                    // cw+=vw*dt; cx+=vx*dt; cy+=vy*dt, cz+=vz*dt;
                     if (abs(cw-goalw)<0.01f && abs(cx-goalx)<0.01f && abs(cy-goaly)<0.01f && abs(cz-goalz)<0.01f) timer++;
+                    // if (abs(cx-goalx)<0.01f && abs(cy-goaly)<0.01f) timer++;
                     else timer=0;
                     if (timer>200) {
                         converged=true; break;
