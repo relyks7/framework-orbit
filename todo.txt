@@ -1,5 +1,0 @@
-todo:
--add revised/magnitude-fixed uncertainty gating
--local time/spiking/voltage
-
-nb:
