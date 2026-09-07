@@ -111,3 +111,7 @@ The recommended graph structure consists of two isomorphic subgraphs $`G_{\mathr
 - Successful sequential target seeking in up to 4 dimensions in both direct-kinematics and undamped inertial experiments.
   - Specifically, in both cases: On a trial of thirty sequential uniformly random four-dimensional targets with each coordinate in the range $`[-1,1]`$, all of 100 initializations completed the sequence. Success at each target was measured as settling within $`0.01`$ of each coordinate for 200 consecutive ticks, within a total timeframe of 100,000 ticks per target. In the undamped inertial experiments, velocity was not supplied in either sensory input or the prior.
 - Two-joint arm remains unsolved, although switching to the alternative forward-model action generation method mentioned above may help.
+
+# Nota Bene
+
+Due to the separation between the main model and the actuator being a fundamental issue with the architecture, this framework is discontinued.
