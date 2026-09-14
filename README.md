@@ -114,4 +114,6 @@ The recommended graph structure consists of two isomorphic subgraphs $`G_{\mathr
 
 # Nota Bene
 
-Due to the separation between the main model and the actuator being a fundamental issue with the architecture, this framework is discontinued.
+Due to the separation between the main model and the actuator being a fundamental issue with, this specific architecture discontinued.
+
+However, the model $`O_w`$ is still of great interest, as experiments suggest that it is capable of nontrivially reducing the sum of local error energies without causing weight magnitude to collapse. Experiments will follow.
