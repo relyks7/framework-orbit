@@ -47,14 +47,6 @@ void delta_rule(vector<float> &a, const vector<float>&x, const vector<float>&err
         }
     }
 }
-void delta_rule_tanh(vector<float> &a, const vector<float>&x, const vector<float>&err, const vector<float>& y, float lr, float s, int n, int m, int idx1, int idx2){
-    //a: nxm, x: mx1, err: nx1
-    for (int i=0;i<n;i++){
-        for (int j=0;j<m;j++){
-            a[i*m+j]+=-lr*dt*err[i]*(1-(y[idx2*n+i]*y[idx2*n+i])/(s*s))*x[idx1*m+j];
-        }
-    }
-}
 vector<float> randvec(int l, float mg){
     vector<float> ret(l, 0.0f); for (int i=0;i<l;i++) ret[i]=gaussian_noise(0, mg);
     return ret;
@@ -71,8 +63,7 @@ vector<float> randvec_u(int l, int mg){
 }
 struct edge{
     vector<float> w;
-    vector<float> u; 
-    vector<float> v;
+    vector<float> sig;
 };
 class lupus{
     public:
@@ -80,32 +71,46 @@ class lupus{
         vector<unordered_map<int, edge>> adj;
         vector<float> h; //nxdx1
         vector<float> force; //nxdx1
-        vector<float> received_signal; //dx1
-        vector<float> chl_err; //dx1
+        vector<float> pred; //nxdx1
+        vector<float> chl_err; //nxdx1
+        vector<float> u; //nxdx1
+        vector<float> v; //nxdx1
+        vector<float> prec; //nxdx1
         vector<float> scaled_chl_err_p; //dx1
         vector<float> par_change; //dx1
-        vector<float> precision; //dx1
-        vector<float> chl_err_p; //dx1
+        vector<float> chl_err_p; //nxdx1
         vector<bool> fixed; //nx1
         vector<int> deg;
+        bool learn_prec=true;
         int tick=0;
         float slow_learn, fast_learn, eps, tanh_mag;
         void add_edge(int x1, int y1){
-            adj[x1][y1]=edge{randeye(d,0.05f/sqrtf(d)),vector<float>(d,0.0f),vector<float>(d,0.0f)};
+            //old randeye term 0.05f/sqrtf(d)
+            adj[x1][y1]=edge{randeye(d,0.0f),vector<float>(d,0.0f)};
+        }
+        void make_sparse(int dg){
+            uniform_int_distribution<int> disti(0,n-1);
+            for (int i=0;i<n;i++){
+                for (int j=0;j<dg;j++) add_edge(i, disti(rng));
+            }
         }
         void reset(){
             tick=0;
             adj.assign(n, unordered_map<int, edge>{});
-            h.assign(n*d, 0.0f); // h=randvec(n*d, 1.0f/sqrtf(d));
+            //h.assign(n*d, 0.0f);
+            h=randvec(n*d, 1.0f/sqrtf(d));
             force.assign(n*d, 0.0f);
-            received_signal.assign(d, 0.0f);
-            chl_err.assign(d, 0.0f);
+            pred.assign(n*d, 0.0f);
+            chl_err.assign(n*d, 0.0f);
             scaled_chl_err_p.assign(d, 0.0f);
             par_change.assign(d, 0.0f);
-            precision.assign(d, 0.0f);
-            chl_err_p.assign(d, 0.0f);
-            fixed.assign(n, false); // fixed[0]=true; fixed[2]=true; fixed[3]=true;
+            u.assign(n*d, 0.0f);
+            v.assign(n*d, 0.0f);
+            prec.assign(n*d, 0.0f);
+            chl_err_p.assign(n*d, 0.0f);
+            fixed.assign(n, false); fixed[0]=true; fixed[1]=true; // fixed[3]=true;
             deg.assign(n,0);
+            make_sparse(4);
             for (int i=0;i<n;i++){
                 for (auto[j,_]:adj[i]){
                     deg[i]++; deg[j]++;
@@ -119,43 +124,112 @@ class lupus{
         }
         void forward(){
             fill(all(force), 0.0f);
+            fill(all(pred), 0.0f);
+            float err=0.0f;
+            float wmg=0.0f;
+            for (int i=0;i<n;i++) for (int j=0;j<d;j++) prec [i*d+j]=1.0f; //prec[i*d+j]=1.0f/(max(0.0f, u[i*d+j]-v[i*d+j]*v[i*d+j])+eps);
             for (int par=0;par<n;par++){
                 for (auto& [i, e]:adj[par]){
-                    auto& [w, u, v]=e;
-                    for (int j=0;j<d;j++) precision[j]=1.0f/(max(0.0f, u[j]-v[j]*v[j])+eps);
-                    // for (int j=0;j<d;j++) precision[j]=1.0f;
-                    matvec(w, h, received_signal, d, d, 0, par);
-                    for (int j=0;j<d;j++) received_signal[j]=tanh_mag*tanhf(received_signal[j]/tanh_mag);
+                    auto& [w, sig]=e;
+                    wmg+=mag(w, 0, d*d);
+                    matvec(w, h, sig, d, d, 0, par);
                     for (int j=0;j<d;j++) {
-                        chl_err[j]=received_signal[j]-h[i*d+j];
-                        chl_err_p[j]=chl_err[j]*precision[j];
-                        force[i*d+j]+=chl_err_p[j];
-                        u[j]+=dt*(chl_err[j]*chl_err[j]-u[j]);
-                        v[j]+=dt*(chl_err[j]-v[j]);
-                        scaled_chl_err_p[j]=chl_err_p[j]*(1-(received_signal[j]*received_signal[j])/(tanh_mag*tanh_mag));
+                        sig[j]=tanh_mag*tanhf(sig[j]/tanh_mag);
+                        pred[i*d+j]+=sig[j];
+                    }
+                }
+            }
+            for (int i=0;i<n;i++) {
+                for (int j=0;j<d;j++){
+                    chl_err[i*d+j]=pred[i*d+j]-h[i*d+j];
+                    err+=0.5f*chl_err[i*d+j]*chl_err[i*d+j];
+                    chl_err_p[i*d+j]=chl_err[i*d+j]*prec[i*d+j];
+                    force[i*d+j]+=chl_err_p[i*d+j];
+                    if (learn_prec){
+                        u[i*d+j]+=dt*(chl_err[i*d+j]*chl_err[i*d+j]-u[i*d+j]);
+                        v[i*d+j]+=dt*(chl_err[i*d+j]-v[i*d+j]);
+                    }
+                }
+            }
+            for (int par=0;par<n;par++){
+                for (auto& [i, e]:adj[par]){
+                    auto& [w, sig]=e;
+                    for (int j=0;j<d;j++) {
+                        scaled_chl_err_p[j]=chl_err_p[i*d+j]*(1-(sig[j]*sig[j])/(tanh_mag*tanh_mag));
                     }
                     matvec_transpose(w, scaled_chl_err_p, par_change, d, d, 0, 0);
                     for (int j=0;j<d;j++) force[par*d+j]-=par_change[j];
-                    delta_rule_tanh(w, h, chl_err_p, received_signal, slow_learn, tanh_mag, d, d, par, 0);
+                    delta_rule(w, h, scaled_chl_err_p, slow_learn, d, d, par);
                 }
             }
+            // if (tick%1000==0){
+            //     cout<<"err: "<<err<<"\nmag: "<<wmg<<'\n';
+            //     cout<<"h_mag: "<<mag(h, 0, n*d)<<'\n';
+            // }
             for (int i=0;i<n;i++){
-                for (int j=0;j<d;j++) force[i*d+j]/=max(1, deg[i]);
+                // for (int j=0;j<d;j++) force[i*d+j]/=max(1, deg[i]); 
                 if (!fixed[i]) for (int j=0;j<d;j++) h[i*d+j]+=dt*fast_learn*force[i*d+j];
             }
+            tick++;
         }
 };
-vector<array<float,4>> gettrial(int len, unsigned int seed){
-    mt19937 target_rng(seed);
-    uniform_real_distribution<float> dist_target(-1.0f, 1.0f);
-    vector<array<float,4>> ret{};
-    while (ret.size()<len){
-        ret.push_back({dist_target(target_rng), dist_target(target_rng), dist_target(target_rng), dist_target(target_rng)});
+void train_sample(lupus& s, int tks, vector<float> ipt, vector<float> opt){
+    // fill(all(s.h), 0.0f);
+    // fill(all(s.u), 0.0f);
+    // fill(all(s.v), 0.0f);
+    for (int i=0;i<tks;i++) {
+        for (int j=0;j<ipt.size();j++) {
+            s.h[j]=ipt[j];
+        }
+        for (int j=0;j<opt.size();j++){
+            s.h[s.d+j]=opt[j];
+        }
+        s.forward();
     }
+}
+vector<float> run_sample(lupus& s, int tks, vector<float> ipt){
+    // fill(all(s.h), 0.0f);
+    // s.learn_prec=false;
+    float osl=s.slow_learn;
+    s.fixed[1]=false;
+    s.slow_learn=0.0f;
+    for (int i=0;i<tks;i++){
+        for (int j=0;j<s.d;j++) {
+            s.h[j]=ipt[j];
+        }
+        s.forward();
+    }
+    vector<float> ret(s.d, 0.0f);
+    for (int j=0;j<s.d;j++) {
+        ret[j]=s.h[s.d+j];
+    }
+    s.slow_learn=osl;
+    s.fixed[1]=true;
+    s.learn_prec=true;
     return ret;
 }
+float f(float x){
+    return sinf(x);
+}
 int main(){
-    lupus sextus(5, 4, 0.01f, 5.0f, 1.0f, 8.0f);
+    lupus sextus(25, 16, 0.01f, 1.0f, 0.2f, 1.0f);
+    uniform_real_distribution<float> distf(-3.0f, 3.0f);
+    for (int i=0;i<500;i++){
+        cout<<"[train] "<<i<<'\n';
+        float x=distf(rng); float y=f(x);
+        train_sample(sextus, 5000, {x}, {y});
+    }
+    string fret="";
+    fret+='{';
+    int tot=100;
+    for (int i=0;i<tot;i++){
+        cout<<"[gen] "<<i<<'\n';
+        float x=distf(rng);
+        fret+="("+to_string(x)+", "+to_string(run_sample(sextus, 5000, {x})[0])+')';
+        if (i<tot-1) fret+=", ";
+    }
+    fret+='}';
+    cout<<fret<<'\n';
     return 0;
 }
 /*
