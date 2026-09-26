@@ -63,6 +63,7 @@ vector<float> randvec_u(int l, int mg){
 }
 struct edge{
     vector<float> w;
+    vector<float> b;
     vector<float> sig;
 };
 class lupus{
@@ -83,23 +84,41 @@ class lupus{
         vector<int> deg;
         bool learn_prec=true;
         int tick=0;
-        float slow_learn, fast_learn, eps, tanh_mag;
-        int dg;
+        float slow_learn, fast_learn, bias_learn, eps, tanh_mag;
+        int dg; int k;
         void add_edge(int x1, int y1){
             //old randeye term 0.05f/sqrtf(d)
-            adj[x1][y1]=edge{randeye(d,0.05f/sqrtf(d)),vector<float>(d,0.0f)};
+            adj[x1][y1]=edge{randeye(d,0.0f/sqrtf(d)),vector<float>(d,0.0f),vector<float>(d,0.0f)};
         }
-        void make_sparse(int dg){
+        void make_sparse(int e, int k){
             uniform_int_distribution<int> disti(0,n-1);
-            for (int i=0;i<n;i++){
-                for (int j=0;j<dg;j++) add_edge(i, disti(rng));
+            add_edge(0, n-1);
+            for (int i=0;i<e-k-1;i++){
+                int n1=disti(rng);
+                int n2=disti(rng);
+                if (n1>n2) swap(n1, n2);
+                while (n1==n2 || adj[n1].count(n2)){
+                    n1=disti(rng);
+                    n2=disti(rng);
+                    if (n1>n2) swap(n1, n2);
+                }
+                add_edge(n1, n2);
+            }
+            for (int i=0;i<k;i++){
+                int n1=disti(rng);
+                int n2=disti(rng);
+                if (n1<n2) swap(n1, n2);
+                while (n1==n2 || adj[n1].count(n2)){
+                    n1=disti(rng);
+                    n2=disti(rng);
+                    if (n1<n2) swap(n1, n2);
+                }
+                add_edge(n1, n2);
             }
         }
         void reset(){
             tick=0;
-            adj.assign(n, unordered_map<int, edge>{});
-            //h.assign(n*d, 0.0f);
-            h=randvec(n*d, 1.0f/sqrtf(d));
+            h.assign(n*d, 0.0f);
             force.assign(n*d, 0.0f);
             pred.assign(n*d, 0.0f);
             chl_err.assign(n*d, 0.0f);
@@ -110,17 +129,28 @@ class lupus{
             prec.assign(n*d, 0.0f);
             chl_err_p.assign(n*d, 0.0f);
             fixed.assign(n, false); fixed[0]=true; fixed[n-1]=true; // fixed[3]=true;
+            for (int par=0;par<n;par++){
+                for (auto& [i, e]:adj[par]){
+                    e=edge{randeye(d,0.0f/sqrtf(d)),vector<float>(d,0.0f),vector<float>(d,0.0f)};
+                }
+            }
+        }
+        lupus(float un, float ud, float sl, float fl, float bl, float e, float tm, int udg, int uk){
+            n=un; d=ud; dg=udg;
+            slow_learn=sl;
+            fast_learn=fl;
+            bias_learn=bl;
+            eps=e;
+            tanh_mag=tm;
+            k=uk;
+            adj.assign(n, unordered_map<int, edge>{});
+            make_sparse(dg, k);
             deg.assign(n,0);
-            make_sparse(dg);
             for (int i=0;i<n;i++){
                 for (auto[j,_]:adj[i]){
                     deg[i]++; deg[j]++;
                 }
             }
-        }
-        lupus(float un, float ud, float sl, float fl, float e, float tm, int udg){
-            n=un; d=ud; dg=udg;
-            slow_learn=sl; fast_learn=fl; eps=e; tanh_mag=tm;
             reset();
         }
         void forward(){
@@ -131,9 +161,10 @@ class lupus{
             for (int i=0;i<n;i++) for (int j=0;j<d;j++) prec[i*d+j]=1.0f; //prec[i*d+j]=1.0f/(max(0.0f, u[i*d+j]-v[i*d+j]*v[i*d+j])+eps);
             for (int par=0;par<n;par++){
                 for (auto& [i, e]:adj[par]){
-                    auto& [w, sig]=e;
+                    auto& [w, b, sig]=e;
                     wmg+=mag(w, 0, d*d);
                     matvec(w, h, sig, d, d, 0, par);
+                    for (int j=0;j<d;j++) sig[j]+=b[j];
                     for (int j=0;j<d;j++) {
                         sig[j]=tanh_mag*tanhf(sig[j]/tanh_mag);
                         pred[i*d+j]+=sig[j];
@@ -154,13 +185,14 @@ class lupus{
             }
             for (int par=0;par<n;par++){
                 for (auto& [i, e]:adj[par]){
-                    auto& [w, sig]=e;
+                    auto& [w, b, sig]=e;
                     for (int j=0;j<d;j++) {
                         scaled_chl_err_p[j]=chl_err_p[i*d+j]*(1-(sig[j]*sig[j])/(tanh_mag*tanh_mag));
                     }
                     matvec_transpose(w, scaled_chl_err_p, par_change, d, d, 0, 0);
                     for (int j=0;j<d;j++) force[par*d+j]-=par_change[j];
                     delta_rule(w, h, scaled_chl_err_p, slow_learn, d, d, par);
+                    for (int j=0;j<d;j++) b[j]+=-bias_learn*dt*scaled_chl_err_p[j];
                 }
             }
             // if (tick%1000==0){
@@ -194,8 +226,10 @@ vector<float> run_sample(lupus& s, int tks, vector<float> ipt, int sz_opt){
     fill(all(s.v), 0.0f);
     // s.learn_prec=false;
     float osl=s.slow_learn;
+    float obl=s.bias_learn;
     s.fixed[s.n-1]=false;
     s.slow_learn=0.0f;
+    s.bias_learn=0.0f;
     for (int i=0;i<tks;i++){
         for (int j=0;j<ipt.size();j++) {
             s.h[j]=ipt[j];
@@ -207,6 +241,7 @@ vector<float> run_sample(lupus& s, int tks, vector<float> ipt, int sz_opt){
         ret[j]=s.h[(s.n-1)*s.d+j];
     }
     s.slow_learn=osl;
+    s.bias_learn=obl;
     s.fixed[s.n-1]=true;
     s.learn_prec=true;
     return ret;
@@ -231,35 +266,36 @@ float test(lupus& s, int cnt, int tks){
     }
     return mse;
 }
-void trial(float sl, float fl, float eps, float thm, int num, int n, int dg){
-    cout<<"trial\nslow learn: "<<sl<<"\nfast learn: "<<fl<<"\nepsilon: "<<eps<<"\ntanh mag: "<<thm<<"\nn: "<<n<<"\ndegree: "<<dg<<"\n---\n";
+void trial(float sl, float fl, float bl, float eps, float thm, int num, int n, int dg, int dim, int k){
+    cout<<"\ntrial\ndim: "<<dim<<"\nslow learn: "<<sl<<"\nfast learn: "<<fl<<"\nepsilon: "<<eps<<"\ntanh mag: "<<thm<<"\nn: "<<n<<"\n---\n";
+    cout<<"graph: \ne: "<<dg<<"\nk: "<<k<<"\n---\n";
     int tot=0;
     float tmse=0.0f;
+    lupus sextus(n, dim, sl, fl, bl, eps, thm, dg, k);
+    for (int par=0;par<sextus.n;par++){
+        for (auto [i, e]:sextus.adj[par]){
+            cout<<par<<' '<<i<<'\n';
+        }
+    }
+    cout<<"---\n";
     for (int i=0;i<num;i++){
-        if (i%5==0) cout<<"test "<<i<<'\n';
-        lupus sextus(n, 1, sl, fl, eps, thm, dg);
+        cout<<"test "<<i<<'\n';
+        sextus.reset();
         train(sextus, 500, 5000);
         float mse=test(sextus, 500, 5000);
-        if (mse<0.02) tot++;
+        cout<<"mse: "<<mse<<'\n';
+        if (mse<0.02) {
+            tot++;
+            cout<<"success\n";
+        }
         tmse+=mse/num;
     }
     cout<<"---\n";
     cout<<"success: "<<tot<<"/"<<num<<'\n';
     cout<<"avg mse: "<<tmse<<"\n\n";
 }
-vector<float> flls={2.0f, 5.0f, 10.0f, 20.0f, 50.0f};
-vector<float> sls={0.003, 0.01, 0.03};
-vector<float> tmags={0.5, 1.0, 2.0};
+vector<int> ks{45, 50, 60, 70, 80};
 int main(){
-    for (auto fl:flls){
-        for (auto sl:sls){
-            for (auto tm:tmags){
-                trial(sl, fl, 1.0f, tm, 30, 16, 7);
-            }
-        }
-    }
+    for (int i=0;i<50;i++) trial(0.01f, 10.0f, 0.01f, 1.0f, 1.0f, 10, 16, 90, 1, 45);
     return 0;
 }
-/*
-clang++ -std=c++23 -O3 -Wall -DACCELERATE_NEW_LAPACK main_fast.cpp -framework Accelerate -o main_fast && ./main_fast
-*/
