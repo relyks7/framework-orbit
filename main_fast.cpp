@@ -108,7 +108,7 @@ class lupus{
                 int n1=disti(rng);
                 int n2=disti(rng);
                 if (n1<n2) swap(n1, n2);
-                while (n1==n2 || adj[n1].count(n2)){
+                while (n1==n2 || adj[n1].count(n2) || n1==n-1){
                     n1=disti(rng);
                     n2=disti(rng);
                     if (n1<n2) swap(n1, n2);
