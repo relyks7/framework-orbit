@@ -43,7 +43,7 @@ void delta_rule(vector<float> &a, const vector<float>&x, const vector<float>&err
     //a: nxm, x: mx1, err: nx1
     for (int i=0;i<n;i++){
         for (int j=0;j<m;j++){
-            a[i*m+j]+=-lr*dt*err[i]*x[idx*m+j];
+            a[i*m+j]+=-lr*err[i]*x[idx*m+j];
         }
     }
 }
@@ -85,36 +85,41 @@ class lupus{
         bool learn_prec=true;
         int tick=0;
         float slow_learn, fast_learn, bias_learn, eps, tanh_mag;
-        int dg; int k;
         void add_edge(int x1, int y1){
             //old randeye term 0.05f/sqrtf(d)
             adj[x1][y1]=edge{randeye(d,0.0f/sqrtf(d)),vector<float>(d,0.0f),vector<float>(d,0.0f)};
         }
-        void make_sparse(int e, int k){
-            uniform_int_distribution<int> disti(0,n-1);
-            add_edge(0, n-1);
-            for (int i=0;i<e-k-1;i++){
-                int n1=disti(rng);
-                int n2=disti(rng);
-                if (n1>n2) swap(n1, n2);
-                while (n1==n2 || adj[n1].count(n2)){
-                    n1=disti(rng);
-                    n2=disti(rng);
-                    if (n1>n2) swap(n1, n2);
-                }
-                add_edge(n1, n2);
-            }
-            for (int i=0;i<k;i++){
-                int n1=disti(rng);
-                int n2=disti(rng);
-                if (n1<n2) swap(n1, n2);
-                while (n1==n2 || adj[n1].count(n2) || n1==n-1){
-                    n1=disti(rng);
-                    n2=disti(rng);
-                    if (n1<n2) swap(n1, n2);
-                }
-                add_edge(n1, n2);
-            }
+        void bi(int x1, int y1){
+            add_edge(x1, y1); add_edge(y1, x1);
+        }
+        void make_graph(){
+            //evil squared square polygonal electric network
+            //why does this work
+            bi(0, 3);
+            bi(0, 2);
+            bi(0, 1);
+            bi(1, 2);
+            bi(1, 5);
+            bi(2, 3);
+            bi(2, 4);
+            bi(2, 5);
+            bi(3, 8);
+            bi(3, 6);
+            bi(3, 4);
+            bi(4, 6);
+            bi(4, 7);
+            bi(5, 7);
+            bi(5, 9);
+            bi(6, 10);
+            bi(7, 11);
+            bi(8, 12);
+            bi(8, 10);
+            bi(9, 11);
+            bi(9, 12);
+            bi(10, 12);
+            bi(10, 11);
+            bi(11, 12);
+            bi(0, 12);
         }
         void reset(){
             tick=0;
@@ -135,16 +140,15 @@ class lupus{
                 }
             }
         }
-        lupus(float un, float ud, float sl, float fl, float bl, float e, float tm, int udg, int uk){
-            n=un; d=ud; dg=udg;
+        lupus(float un, float ud, float sl, float fl, float bl, float e, float tm){
+            n=un; d=ud;
             slow_learn=sl;
             fast_learn=fl;
             bias_learn=bl;
             eps=e;
             tanh_mag=tm;
-            k=uk;
             adj.assign(n, unordered_map<int, edge>{});
-            make_sparse(dg, k);
+            make_graph();
             deg.assign(n,0);
             for (int i=0;i<n;i++){
                 for (auto[j,_]:adj[i]){
@@ -192,7 +196,7 @@ class lupus{
                     matvec_transpose(w, scaled_chl_err_p, par_change, d, d, 0, 0);
                     for (int j=0;j<d;j++) force[par*d+j]-=par_change[j];
                     delta_rule(w, h, scaled_chl_err_p, slow_learn, d, d, par);
-                    for (int j=0;j<d;j++) b[j]+=-bias_learn*dt*scaled_chl_err_p[j];
+                    for (int j=0;j<d;j++) b[j]+=-bias_learn*scaled_chl_err_p[j];
                 }
             }
             // if (tick%1000==0){
@@ -210,6 +214,10 @@ void train_sample(lupus& s, int tks, vector<float> ipt, vector<float> opt){
     fill(all(s.h), 0.0f);
     fill(all(s.u), 0.0f);
     fill(all(s.v), 0.0f);
+    float osl=s.slow_learn;
+    float obl=s.bias_learn;
+    s.slow_learn=0.0f;
+    s.bias_learn=0.0f;
     for (int i=0;i<tks;i++) {
         for (int j=0;j<ipt.size();j++) {
             s.h[j]=ipt[j];
@@ -219,6 +227,15 @@ void train_sample(lupus& s, int tks, vector<float> ipt, vector<float> opt){
         }
         s.forward();
     }
+    s.slow_learn=osl;
+    s.bias_learn=obl;
+    for (int j=0;j<ipt.size();j++) {
+            s.h[j]=ipt[j];
+    }
+    for (int j=0;j<opt.size();j++){
+        s.h[(s.n-1)*s.d+j]=opt[j];
+    }
+    s.forward();
 }
 vector<float> run_sample(lupus& s, int tks, vector<float> ipt, int sz_opt){
     fill(all(s.h), 0.0f);
@@ -266,12 +283,11 @@ float test(lupus& s, int cnt, int tks){
     }
     return mse;
 }
-void trial(float sl, float fl, float bl, float eps, float thm, int num, int n, int dg, int dim, int k){
+void trial(float sl, float fl, float bl, float eps, float thm, int num, int n, int dim){
     cout<<"\ntrial\ndim: "<<dim<<"\nslow learn: "<<sl<<"\nfast learn: "<<fl<<"\nepsilon: "<<eps<<"\ntanh mag: "<<thm<<"\nn: "<<n<<"\n---\n";
-    cout<<"graph: \ne: "<<dg<<"\nk: "<<k<<"\n---\n";
     int tot=0;
     float tmse=0.0f;
-    lupus sextus(n, dim, sl, fl, bl, eps, thm, dg, k);
+    lupus sextus(n, dim, sl, fl, bl, eps, thm);
     for (int par=0;par<sextus.n;par++){
         for (auto [i, e]:sextus.adj[par]){
             cout<<par<<' '<<i<<'\n';
@@ -296,6 +312,6 @@ void trial(float sl, float fl, float bl, float eps, float thm, int num, int n, i
 }
 vector<int> ks{45, 50, 60, 70, 80};
 int main(){
-    for (int i=0;i<50;i++) trial(0.01f, 10.0f, 0.01f, 1.0f, 1.0f, 10, 16, 90, 1, 45);
+    for (int i=0;i<50;i++) trial(0.3f, 10.0f, 0.3f, 1.0f, 1.0f, 10, 13, 1);
     return 0;
 }
