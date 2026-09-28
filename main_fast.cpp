@@ -95,6 +95,7 @@ class lupus{
         void make_graph(){
             //evil squared square polygonal electric network
             //why does this work
+            //o24-195a
             bi(0, 3);
             bi(0, 2);
             bi(0, 1);
@@ -210,7 +211,7 @@ class lupus{
             tick++;
         }
 };
-void train_sample(lupus& s, int tks, vector<float> ipt, vector<float> opt){
+void train_sample(lupus& s, int tks, vector<float> ipt, vector<float> ipt2, vector<float> opt){
     fill(all(s.h), 0.0f);
     fill(all(s.u), 0.0f);
     fill(all(s.v), 0.0f);
@@ -218,9 +219,17 @@ void train_sample(lupus& s, int tks, vector<float> ipt, vector<float> opt){
     float obl=s.bias_learn;
     s.slow_learn=0.0f;
     s.bias_learn=0.0f;
+    s.fixed[s.n-1]=false;
     for (int i=0;i<tks;i++) {
         for (int j=0;j<ipt.size();j++) {
             s.h[j]=ipt[j];
+        }
+        s.forward();
+    }
+    s.fixed[s.n-1]=true;
+    for (int i=0;i<tks;i++) {
+        for (int j=0;j<ipt2.size();j++) {
+            s.h[j]=ipt2[j];
         }
         for (int j=0;j<opt.size();j++){
             s.h[(s.n-1)*s.d+j]=opt[j];
@@ -229,15 +238,15 @@ void train_sample(lupus& s, int tks, vector<float> ipt, vector<float> opt){
     }
     s.slow_learn=osl;
     s.bias_learn=obl;
-    for (int j=0;j<ipt.size();j++) {
-            s.h[j]=ipt[j];
+    for (int j=0;j<ipt2.size();j++) {
+            s.h[j]=ipt2[j];
     }
     for (int j=0;j<opt.size();j++){
         s.h[(s.n-1)*s.d+j]=opt[j];
     }
     s.forward();
 }
-vector<float> run_sample(lupus& s, int tks, vector<float> ipt, int sz_opt){
+vector<float> run_sample(lupus& s, int tks, vector<float> ipt, vector<float> ipt2, int sz_opt){
     fill(all(s.h), 0.0f);
     fill(all(s.u), 0.0f);
     fill(all(s.v), 0.0f);
@@ -253,6 +262,12 @@ vector<float> run_sample(lupus& s, int tks, vector<float> ipt, int sz_opt){
         }
         s.forward();
     }
+    for (int i=0;i<tks;i++){
+        for (int j=0;j<ipt2.size();j++) {
+            s.h[j]=ipt2[j];
+        }
+        s.forward();
+    }
     vector<float> ret(s.d, 0.0f);
     for (int j=0;j<sz_opt;j++) {
         ret[j]=s.h[(s.n-1)*s.d+j];
@@ -263,23 +278,22 @@ vector<float> run_sample(lupus& s, int tks, vector<float> ipt, int sz_opt){
     s.learn_prec=true;
     return ret;
 }
-uniform_real_distribution<float> distf(-3.0f, 3.0f);
-float f(float x){
-    return sinf(x);
-}
+uniform_real_distribution<float> distf(-1.0f, 1.0f);
 void train(lupus& s, int cnt, int tks){
     for (int i=0;i<cnt;i++){
-        float x=distf(rng); float y=f(x);
-        train_sample(s, tks, {x}, {y});
+        float x=distf(rng);
+        float y=distf(rng);
+        train_sample(s, tks, {x, 0}, {y, 1}, {x+y, 1});
     }
 }
 float test(lupus& s, int cnt, int tks){
     float mse=0.0f;
     for (int i=0;i<cnt;i++){
         float x=distf(rng);
-        float y=f(x);
-        float gen=run_sample(s, tks, {x}, 1)[0];
-        mse+=(gen-y)*(gen-y)/cnt;
+        float y=distf(rng);
+        vector<float> z{x+y, 1};
+        vector<float> gen=run_sample(s, tks, {x, 0}, {y, 1}, 2);
+        for (int j=0;j<1;j++) mse+=(gen[j]-z[j])*(gen[j]-z[j])/cnt; //only care about first one (actual val)
     }
     return mse;
 }
@@ -288,17 +302,17 @@ void trial(float sl, float fl, float bl, float eps, float thm, int num, int n, i
     int tot=0;
     float tmse=0.0f;
     lupus sextus(n, dim, sl, fl, bl, eps, thm);
-    for (int par=0;par<sextus.n;par++){
-        for (auto [i, e]:sextus.adj[par]){
-            cout<<par<<' '<<i<<'\n';
-        }
-    }
-    cout<<"---\n";
+    // for (int par=0;par<sextus.n;par++){
+    //     for (auto [i, e]:sextus.adj[par]){
+    //         cout<<par<<' '<<i<<'\n';
+    //     }
+    // }
+    // cout<<"---\n";
     for (int i=0;i<num;i++){
         cout<<"test "<<i<<'\n';
         sextus.reset();
-        train(sextus, 500, 5000);
-        float mse=test(sextus, 500, 5000);
+        train(sextus, 1000, 1000);
+        float mse=test(sextus, 1000, 1000);
         cout<<"mse: "<<mse<<'\n';
         if (mse<0.02) {
             tot++;
@@ -312,6 +326,7 @@ void trial(float sl, float fl, float bl, float eps, float thm, int num, int n, i
 }
 vector<int> ks{45, 50, 60, 70, 80};
 int main(){
-    for (int i=0;i<50;i++) trial(0.3f, 10.0f, 0.3f, 1.0f, 1.0f, 10, 13, 1);
+    cout<<"NORMAL RUN_SAMPLE\n";
+    for (int i=0;i<50;i++) trial(0.3f, 10.0f, 0.3f, 1.0f, 1.0f, 10, 13, 2);
     return 0;
 }
