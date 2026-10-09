@@ -14,6 +14,7 @@
 #include <Accelerate/Accelerate.h>
 using namespace std;
 #define all(v) v.begin(), v.end()
+typedef pair<vector<float>, vector<float>> pvf;
 using ll=long long;
 int INF=0x3f3f3f3f;
 float SENTINEL=-MAXFLOAT;
@@ -22,7 +23,7 @@ float gaussian_noise(float mean, float stddev){
     normal_distribution<float> dist(mean, stddev);
     return dist(rng);
 }
-thread_local uniform_real_distribution<float> disf(0.0f, 1.0f);
+thread_local uniform_real_distribution<float> disf(-5.0f, 5.0f);
 float dt=0.01f;
 void matvec(const vector<float>& a, const vector<float>& b, vector<float>& c, int n, int m, int idx1, int idx2){
     cblas_sgemv(CblasRowMajor, CblasNoTrans, n, m, 1.0f, a.data()+(idx1*n*m), m, b.data()+(idx2*m), 1, 0.0f, c.data(), 1);
@@ -134,18 +135,20 @@ class lupus{
             v.assign(n*d, 0.0f);
             prec.assign(n*d, 0.0f);
             chl_err_p.assign(n*d, 0.0f);
-            fixed.assign(n, false); fixed[0]=true; fixed[n-1]=true; // fixed[3]=true;
+            fixed.assign(n, false);
+            fixed[0]=true; //s_t
+            fixed[1]=true; //s_t+1
+            fixed[2]=true; //err
+            fixed[n-1]=true; //act
             for (int par=0;par<n;par++){
                 for (auto& [i, e]:adj[par]){
                     e=edge{randeye(d,0.0f/sqrtf(d)),vector<float>(d,0.0f),vector<float>(d,0.0f)};
                 }
             }
         }
-        lupus(float un, float ud, float sl, float fl, float bl, float e, float tm){
+        lupus(int un, int ud, float fl, float e, float tm){
             n=un; d=ud;
-            slow_learn=sl;
             fast_learn=fl;
-            bias_learn=bl;
             eps=e;
             tanh_mag=tm;
             adj.assign(n, unordered_map<int, edge>{});
@@ -210,123 +213,93 @@ class lupus{
             }
             tick++;
         }
+        void train(int tks, vector<float> ipt0, vector<float> ipt1, vector<float> ipt2, vector<float> opt, float lr){
+            fill(all(h), 0.0f);
+            fill(all(u), 0.0f);
+            fill(all(v), 0.0f);
+            slow_learn=0.0f;
+            bias_learn=0.0f;
+            for (int i=0;i<tks;i++) {
+                for (int j=0;j<ipt0.size();j++) {
+                    h[j]=ipt0[j];
+                }
+                for (int j=0;j<ipt1.size();j++) {
+                    h[1*d+j]=ipt1[1*d+j];
+                }
+                for (int j=0;j<ipt2.size();j++) {
+                    h[2*d+j]=ipt2[2*d+j];
+                }
+                for (int j=0;j<opt.size();j++){
+                    h[(n-1)*d+j]=opt[j];
+                }
+                forward();
+            }
+            slow_learn=lr;
+            bias_learn=lr;
+            for (int j=0;j<ipt0.size();j++) {
+                h[j]=ipt0[j];
+            }
+            for (int j=0;j<ipt1.size();j++) {
+                h[1*d+j]=ipt1[1*d+j];
+            }
+            for (int j=0;j<ipt2.size();j++) {
+                h[2*d+j]=ipt2[2*d+j];
+            }
+            for (int j=0;j<opt.size();j++){
+                h[(n-1)*d+j]=opt[j];
+            }
+            forward();
+        }
+        vector<float> generate(int tks, vector<float> ipt0, vector<float> ipt1, vector<float> ipt2){
+            fill(all(h), 0.0f);
+            fill(all(u), 0.0f);
+            fill(all(v), 0.0f);
+            float osl=slow_learn;
+            float obl=bias_learn;
+            slow_learn=0.0f;
+            bias_learn=0.0f;
+            fixed[n-1]=false;
+            for (int i=0;i<tks;i++) {
+                for (int j=0;j<ipt0.size();j++) {
+                    h[j]=ipt0[j];
+                }
+                for (int j=0;j<ipt1.size();j++) {
+                    h[1*d+j]=ipt1[1*d+j];
+                }
+                for (int j=0;j<ipt2.size();j++) {
+                    h[2*d+j]=ipt2[2*d+j];
+                }
+                forward();
+                
+            }
+            vector<float> ret(d, 0.0f);
+            for (int j=0;j<d;j++) {
+                ret[j]=h[(n-1)*d+j];
+            }
+            slow_learn=osl;
+            bias_learn=obl;
+            fixed[n-1]=true;
+            return ret;
+        }
 };
-void train_sample(lupus& s, int tks, vector<float> ipt, vector<float> ipt2, vector<float> opt){
-    fill(all(s.h), 0.0f);
-    fill(all(s.u), 0.0f);
-    fill(all(s.v), 0.0f);
-    float osl=s.slow_learn;
-    float obl=s.bias_learn;
-    s.slow_learn=0.0f;
-    s.bias_learn=0.0f;
-    s.fixed[s.n-1]=false;
-    for (int i=0;i<tks;i++) {
-        for (int j=0;j<ipt.size();j++) {
-            s.h[j]=ipt[j];
-        }
-        s.forward();
-    }
-    s.fixed[s.n-1]=true;
-    for (int i=0;i<tks;i++) {
-        for (int j=0;j<ipt2.size();j++) {
-            s.h[j]=ipt2[j];
-        }
-        for (int j=0;j<opt.size();j++){
-            s.h[(s.n-1)*s.d+j]=opt[j];
-        }
-        s.forward();
-    }
-    s.slow_learn=osl;
-    s.bias_learn=obl;
-    for (int j=0;j<ipt2.size();j++) {
-            s.h[j]=ipt2[j];
-    }
-    for (int j=0;j<opt.size();j++){
-        s.h[(s.n-1)*s.d+j]=opt[j];
-    }
-    s.forward();
-}
-vector<float> run_sample(lupus& s, int tks, vector<float> ipt, vector<float> ipt2, int sz_opt){
-    fill(all(s.h), 0.0f);
-    fill(all(s.u), 0.0f);
-    fill(all(s.v), 0.0f);
-    // s.learn_prec=false;
-    float osl=s.slow_learn;
-    float obl=s.bias_learn;
-    s.fixed[s.n-1]=false;
-    s.slow_learn=0.0f;
-    s.bias_learn=0.0f;
-    for (int i=0;i<tks;i++){
-        for (int j=0;j<ipt.size();j++) {
-            s.h[j]=ipt[j];
-        }
-        s.forward();
-    }
-    for (int i=0;i<tks;i++){
-        for (int j=0;j<ipt2.size();j++) {
-            s.h[j]=ipt2[j];
-        }
-        s.forward();
-    }
-    vector<float> ret(s.d, 0.0f);
-    for (int j=0;j<sz_opt;j++) {
-        ret[j]=s.h[(s.n-1)*s.d+j];
-    }
-    s.slow_learn=osl;
-    s.bias_learn=obl;
-    s.fixed[s.n-1]=true;
-    s.learn_prec=true;
-    return ret;
-}
-uniform_real_distribution<float> distf(-1.0f, 1.0f);
-void train(lupus& s, int cnt, int tks){
-    for (int i=0;i<cnt;i++){
-        float x=distf(rng);
-        float y=distf(rng);
-        train_sample(s, tks, {x, 0}, {y, 1}, {x+y, 1});
-    }
-}
-float test(lupus& s, int cnt, int tks){
-    float mse=0.0f;
-    for (int i=0;i<cnt;i++){
-        float x=distf(rng);
-        float y=distf(rng);
-        vector<float> z{x+y, 1};
-        vector<float> gen=run_sample(s, tks, {x, 0}, {y, 1}, 2);
-        for (int j=0;j<1;j++) mse+=(gen[j]-z[j])*(gen[j]-z[j])/cnt; //only care about first one (actual val)
-    }
-    return mse;
-}
-void trial(float sl, float fl, float bl, float eps, float thm, int num, int n, int dim){
-    cout<<"\ntrial\ndim: "<<dim<<"\nslow learn: "<<sl<<"\nfast learn: "<<fl<<"\nepsilon: "<<eps<<"\ntanh mag: "<<thm<<"\nn: "<<n<<"\n---\n";
-    int tot=0;
-    float tmse=0.0f;
-    lupus sextus(n, dim, sl, fl, bl, eps, thm);
-    // for (int par=0;par<sextus.n;par++){
-    //     for (auto [i, e]:sextus.adj[par]){
-    //         cout<<par<<' '<<i<<'\n';
-    //     }
-    // }
-    // cout<<"---\n";
-    for (int i=0;i<num;i++){
-        cout<<"test "<<i<<'\n';
-        sextus.reset();
-        train(sextus, 1000, 1000);
-        float mse=test(sextus, 1000, 1000);
-        cout<<"mse: "<<mse<<'\n';
-        if (mse<0.02) {
-            tot++;
-            cout<<"success\n";
-        }
-        tmse+=mse/num;
-    }
-    cout<<"---\n";
-    cout<<"success: "<<tot<<"/"<<num<<'\n';
-    cout<<"avg mse: "<<tmse<<"\n\n";
-}
-vector<int> ks{45, 50, 60, 70, 80};
+int traincnt=1000;
+int testcnt=1000;
 int main(){
-    cout<<"NORMAL RUN_SAMPLE\n";
-    for (int i=0;i<50;i++) trial(0.3f, 10.0f, 0.3f, 1.0f, 1.0f, 10, 13, 2);
-    return 0;
+    lupus sextus(13, 1, 10.0f, 1.0f, 1.5f);
+    for (int _=1;_<=traincnt;_++){
+        float x=disf(rng), y=sinf(x);
+        sextus.train(5000, {x}, {y}, 0.3f);
+        if (_%50==0) cout<<"train "<<_<<'\n';
+    }
+    float mse=0.0f;
+    for (int _=1;_<=testcnt;_++){
+        float x=disf(rng), y=sextus.generate(1000, {x})[0];
+        float cy=sinf(x);
+        mse+=(y-cy)*(y-cy)/testcnt;
+        if (_%50==0) cout<<"test "<<_<<'\n';
+    }
+    cout<<mse<<'\n';
 }
+/*
+clang++ -std=c++23 -O3 -Wall -DACCELERATE_NEW_LAPACK main_fast.cpp -framework Accelerate -o main_fast && ./main_fast
+*/
