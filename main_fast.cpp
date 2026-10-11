@@ -136,10 +136,6 @@ class lupus{
             prec.assign(n*d, 0.0f);
             chl_err_p.assign(n*d, 0.0f);
             fixed.assign(n, false);
-            fixed[0]=true; //s_t
-            fixed[1]=true; //s_t+1
-            fixed[2]=true; //err
-            fixed[n-1]=true; //act
             for (int par=0;par<n;par++){
                 for (auto& [i, e]:adj[par]){
                     e=edge{randeye(d,0.0f/sqrtf(d)),vector<float>(d,0.0f),vector<float>(d,0.0f)};
@@ -166,6 +162,7 @@ class lupus{
             fill(all(pred), 0.0f);
             float err=0.0f;
             float wmg=0.0f;
+            // precision is disabled right now
             for (int i=0;i<n;i++) for (int j=0;j<d;j++) prec[i*d+j]=1.0f; //prec[i*d+j]=1.0f/(max(0.0f, u[i*d+j]-v[i*d+j]*v[i*d+j])+eps);
             for (int par=0;par<n;par++){
                 for (auto& [i, e]:adj[par]){
@@ -213,44 +210,7 @@ class lupus{
             }
             tick++;
         }
-        void train(int tks, vector<float> ipt0, vector<float> ipt1, vector<float> ipt2, vector<float> opt, float lr){
-            fill(all(h), 0.0f);
-            fill(all(u), 0.0f);
-            fill(all(v), 0.0f);
-            slow_learn=0.0f;
-            bias_learn=0.0f;
-            for (int i=0;i<tks;i++) {
-                for (int j=0;j<ipt0.size();j++) {
-                    h[j]=ipt0[j];
-                }
-                for (int j=0;j<ipt1.size();j++) {
-                    h[1*d+j]=ipt1[1*d+j];
-                }
-                for (int j=0;j<ipt2.size();j++) {
-                    h[2*d+j]=ipt2[2*d+j];
-                }
-                for (int j=0;j<opt.size();j++){
-                    h[(n-1)*d+j]=opt[j];
-                }
-                forward();
-            }
-            slow_learn=lr;
-            bias_learn=lr;
-            for (int j=0;j<ipt0.size();j++) {
-                h[j]=ipt0[j];
-            }
-            for (int j=0;j<ipt1.size();j++) {
-                h[1*d+j]=ipt1[1*d+j];
-            }
-            for (int j=0;j<ipt2.size();j++) {
-                h[2*d+j]=ipt2[2*d+j];
-            }
-            for (int j=0;j<opt.size();j++){
-                h[(n-1)*d+j]=opt[j];
-            }
-            forward();
-        }
-        vector<float> generate(int tks, vector<float> ipt0, vector<float> ipt1, vector<float> ipt2){
+        vector<float> generate(int tks, vector<pair<int, vector<float>>> clmp, vector<pair<int, vector<float>>> drag, float dk){
             fill(all(h), 0.0f);
             fill(all(u), 0.0f);
             fill(all(v), 0.0f);
@@ -258,47 +218,56 @@ class lupus{
             float obl=bias_learn;
             slow_learn=0.0f;
             bias_learn=0.0f;
-            fixed[n-1]=false;
+            for (auto [idx, _]:clmp) fixed[idx]=true;
             for (int i=0;i<tks;i++) {
-                for (int j=0;j<ipt0.size();j++) {
-                    h[j]=ipt0[j];
+                for (auto [idx, vl]:clmp){
+                    for (int j=0;j<d;j++) h[idx*d+j]=vl[j];
                 }
-                for (int j=0;j<ipt1.size();j++) {
-                    h[1*d+j]=ipt1[1*d+j];
-                }
-                for (int j=0;j<ipt2.size();j++) {
-                    h[2*d+j]=ipt2[2*d+j];
+                for (auto [idx, vl]:drag){
+                    for (int j=0;j<d;j++) h[idx*d+j]+=dk*(vl[j]-h[idx*d+j]);
                 }
                 forward();
-                
             }
             vector<float> ret(d, 0.0f);
             for (int j=0;j<d;j++) {
-                ret[j]=h[(n-1)*d+j];
+                ret[j]=h[j]; //read from node 0 by default
             }
-            slow_learn=osl;
-            bias_learn=obl;
-            fixed[n-1]=true;
+            for (auto [idx, _]:clmp) fixed[idx]=false;
             return ret;
         }
+        void train(int tks, vector<pair<int, vector<float>>> clmp, float lr){ //call this after generate, no state reset (mature state learns better), continuous learning
+            slow_learn=lr;
+            bias_learn=lr;
+            for (auto [idx, _]:clmp) fixed[idx]=true;
+            for (int i=0;i<tks;i++) {
+                for (auto [idx, vl]:clmp){
+                    for (int j=0;j<d;j++) h[idx*d+j]=vl[j];
+                }
+                forward();
+            }
+            for (auto [idx, _]:clmp) fixed[idx]=false;
+        }
 };
-int traincnt=1000;
-int testcnt=1000;
+int cnt=100000;
+float curx=0.0f;
+float gx=1.0f;
+lupus sextus(13, 1, 10.0f, 1.0f, 2.0f);
 int main(){
-    lupus sextus(13, 1, 10.0f, 1.0f, 1.5f);
-    for (int _=1;_<=traincnt;_++){
-        float x=disf(rng), y=sinf(x);
-        sextus.train(5000, {x}, {y}, 0.3f);
-        if (_%50==0) cout<<"train "<<_<<'\n';
+    /*
+    0:a_t
+    1:s_t
+    2:e_t+1
+    3:s_t+1
+    */
+    for (int i=0;i<cnt;i++){
+        float act=sextus.generate(48, {{1,{curx}}}, {{2,{0.0f}}}, 0.05f)[0];
+        act+=gaussian_noise(0.0f, 0.15f);
+        float ncx=curx+0.25f*act;
+        float et1=ncx-gx;
+        sextus.train(20, {{0,{act}}, {1,{curx}}, {2,{et1}}, {3,{ncx}}}, 0.02f);
+        curx=ncx;
+        cout<<curx<<'\n';
     }
-    float mse=0.0f;
-    for (int _=1;_<=testcnt;_++){
-        float x=disf(rng), y=sextus.generate(1000, {x})[0];
-        float cy=sinf(x);
-        mse+=(y-cy)*(y-cy)/testcnt;
-        if (_%50==0) cout<<"test "<<_<<'\n';
-    }
-    cout<<mse<<'\n';
 }
 /*
 clang++ -std=c++23 -O3 -Wall -DACCELERATE_NEW_LAPACK main_fast.cpp -framework Accelerate -o main_fast && ./main_fast
